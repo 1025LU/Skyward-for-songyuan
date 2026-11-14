@@ -25,6 +25,9 @@ pub struct State {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// The Wi-Fi password is kept on the data partition, which only opens
+    /// once it is unlocked, rather than on the persist partition.
+    pub wlan_kept: bool,
     pub reboot: usize,
     /// What the wipe page has chosen, by place in [`WIPES`].
     pub wipe: [bool; WIPES.len()],
@@ -196,6 +199,7 @@ impl Default for State {
             vibrate: true,
             vibration: SLIDER_START,
             file_transfer: true,
+            wlan_kept: false,
             reboot: 0,
             wipe: [false; WIPES.len()],
             cache_partition: false,

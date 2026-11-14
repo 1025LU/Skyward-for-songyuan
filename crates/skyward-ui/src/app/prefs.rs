@@ -29,6 +29,9 @@ pub enum Switch {
     Wlan,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
+    /// Keep the Wi-Fi password on the data partition, which only opens once
+    /// it is unlocked, rather than on the persist partition.
+    WlanKept,
 }
 
 /// How long the screen stays on with nothing touched, in milliseconds, in

@@ -8,7 +8,6 @@ use skyward_vab::SnapshotState;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "android")]
-mod aod;
 #[cfg(target_os = "android")]
 mod backup;
 #[cfg(target_os = "android")]
@@ -40,7 +39,6 @@ mod settings;
 #[cfg(target_os = "android")]
 mod systems;
 #[cfg(target_os = "android")]
-mod touch;
 #[cfg(target_os = "android")]
 mod ui;
 #[cfg(target_os = "android")]

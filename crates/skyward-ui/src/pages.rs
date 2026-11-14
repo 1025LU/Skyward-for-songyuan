@@ -158,6 +158,7 @@ const REBOOT_TARGETS: [(Text, Option<Text>); 6] = [
 /// What pages are called both on the rows that open them and in their own
 /// titles.
 const WLAN: Text = ["WLAN", "Wi-Fi", "Wi-Fi"];
+const KEEP_ON_DATA: Text = ["密码存在 data 分区", "密碼存在 data 分區", "Keep password on data"];
 const DECRYPT: Text = ["解密", "解密", "Decrypt"];
 const ADVANCED: Text = ["高级", "進階", "Advanced"];
 const SETTINGS: Text = ["设置", "設定", "Settings"];
@@ -2766,9 +2767,25 @@ pub fn wlan(cx: &Ctx) -> Frame {
     let mut out = Vec::new();
     let top = t.m.content_top;
     let on = !matches!(w.power, Power::Off | Power::Failed(_));
-    let switch = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(WLAN)).trail(Trail::Switch(on))]);
-    out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan)]));
-    let mut y = switch.bottom;
+    let switch = widgets::list(&mut c, t, f, top, &[
+        Row::new(l.pick(WLAN)).trail(Trail::Switch(on)),
+        Row::new(l.pick(KEEP_ON_DATA)).trail(Trail::Switch(s.wlan_kept)),
+    ]);
+    out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan), Action::Toggle(Switch::WlanKept)]));
+    let kept = if s.wlan_kept {
+        l.pick([
+            "密码只写进 data 分区，未解密时读不到，更安全；解密之前 WLAN 不会自动连上。",
+            "密碼只寫進 data 分割區，未解密時讀不到，更安全；解密之前 Wi-Fi 不會自動連上。",
+            "The password is written only to the data partition, which stays closed until it is unlocked: safer, but Wi-Fi joins nothing before then.",
+        ])
+    } else {
+        l.pick([
+            "密码写在 persist 分区，每次开机都能直接用；该分区不加密，能读写它的人可以看到密码。",
+            "密碼寫在 persist 分割區，每次開機都能直接用；該分割區不加密，能讀寫它的人可以看到密碼。",
+            "The password is written to the persist partition, which every start reads: it is not encrypted, so whoever can read it can see the password.",
+        ])
+    };
+    let mut y = widgets::footnote(&mut c, t, f, switch.bottom, kept);
     match &w.power {
         Power::Off => {
             let note = l.pick([

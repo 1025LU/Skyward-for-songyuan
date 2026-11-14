@@ -49,6 +49,9 @@ pub struct Settings {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// The Wi-Fi password is kept on the data partition, which only opens
+    /// once it is unlocked, rather than on the persist partition.
+    pub wlan_kept: bool,
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
@@ -126,6 +129,7 @@ impl Settings {
             vibrate: state.vibrate,
             vibration: state.vibration,
             file_transfer: state.file_transfer,
+            wlan_kept: state.wlan_kept,
             install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery },
             backup: Backup {
                 parts: names(&state.backup, &PARTS),
@@ -184,6 +188,7 @@ impl Settings {
             state.vibration = self.vibration;
         }
         state.file_transfer = self.file_transfer;
+        state.wlan_kept = self.wlan_kept;
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
         state.backup = picked(&self.backup.parts, &PARTS);
