@@ -1781,13 +1781,28 @@ pub fn slider_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, caption: Capt
     SliderBlock { bottom: top + h, track, below: below_rect }
 }
 
+/// How a swipe-to-confirm control is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmTone {
+    /// The page's own accent.
+    Accent,
+    /// The warning red of something that erases or breaks.
+    Danger,
+    /// Xiaomi's own orange, #ff6900, as its own fastboot shows it.
+    Brand,
+}
+
 /// Swipe-to-confirm control in the thick-slider style; `progress` (0 to 1)
 /// is how far the knob has been dragged. Returns the track.
-pub fn confirm(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str, danger: bool, progress: f32) -> Rect {
+pub fn confirm(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str, tone: ConfirmTone, progress: f32) -> Rect {
     let m = &t.m;
-    let accent = if danger { t.pal.danger } else { t.pal.accent };
+    let (accent, soft) = match tone {
+        ConfirmTone::Accent => (t.pal.accent, t.pal.badge),
+        ConfirmTone::Danger => (t.pal.danger, t.pal.danger_soft),
+        ConfirmTone::Brand => (Rgba::rgb(0xff, 0x69, 0x00), Rgba::rgb(0xff, 0x69, 0x00).with_alpha(36)),
+    };
     let (x, w, h) = (m.margin, m.w as f32 - m.margin * 2.0, m.dp(56.0));
-    c.fill_round_rect(x, top, w, h, h / 2.0, if danger { t.pal.danger_soft } else { t.pal.badge });
+    c.fill_round_rect(x, top, w, h, h / 2.0, soft);
     c.text_center(&f.heading, label, x + w / 2.0 + h / 4.0, top + h / 2.0, m.row_title_px, accent);
     let k = h - m.dp(8.0);
     let kcx = x + h / 2.0 + (w - h) * progress.clamp(0.0, 1.0);
@@ -2348,15 +2363,24 @@ pub fn info_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[(&str,
     let width = right - m.inner - x;
     let (ink_top, _) = f.heading.ink(m.row_title_px);
     let (to_value, pitch) = (m.dp(20.2), m.dp(19.0));
-    let blocks: Vec<Vec<String>> =
-        items.iter().map(|(_, v)| v.lines().flat_map(|l| wrap(c, &f.body, l, m.sub_px, width)).collect()).collect();
+    let blocks: Vec<Vec<String>> = items
+        .iter()
+        .map(|(_, v)| {
+            if v.is_empty() {
+                Vec::new()
+            } else {
+                v.lines().flat_map(|l| wrap(c, &f.body, l, m.sub_px, width)).collect()
+            }
+        })
+        .collect();
     let mut bases = Vec::new();
     let mut title_top = top + m.dp(23.5);
     let mut last = title_top;
     for lines in &blocks {
         let base = title_top - ink_top;
         bases.push(base);
-        last = base + to_value + pitch * lines.len().saturating_sub(1) as f32;
+        // A card whose entry says nothing below it stops at its title.
+        last = base + if lines.is_empty() { 0.0 } else { to_value + pitch * lines.len().saturating_sub(1) as f32 };
         title_top = last + m.dp(33.0);
     }
     let bottom = last + m.dp(24.0);

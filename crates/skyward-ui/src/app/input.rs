@@ -496,10 +496,10 @@ impl App {
     /// Draw the swipe-to-confirm control at `track` on the page again, its
     /// knob where it has come to.
     pub(super) fn paint_knob(&mut self, t: &Theme, f: &Fonts, which: Confirm, track: Rect) {
-        let (label, danger) = pages::confirm_label(which, &self.state);
+        let (label, tone) = pages::confirm_label(which, &self.state);
         if let Some(fr) = self.frame.as_mut() {
             fr.canvas.fill_rect(track.x, track.y, track.w, track.h, t.pal.bg);
-            widgets::confirm(&mut fr.canvas, t, f, track.y, label, danger, self.state.confirm);
+            widgets::confirm(&mut fr.canvas, t, f, track.y, label, tone, self.state.confirm);
         }
         self.layer = None;
     }

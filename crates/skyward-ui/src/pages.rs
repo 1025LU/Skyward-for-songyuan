@@ -1,7 +1,7 @@
 use crate::app::{
     Action, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field, FileKind,
     FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows, Screen,
-    SkywardEnd, SkywardJob, Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, UsbState, Wipe, ADDABLE,
+    Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, UsbState, Wipe, ADDABLE,
     BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE,
     USB_DRIVE_WANTED, WIPES, installs, starting,
 };
@@ -18,7 +18,7 @@ use crate::term::{self, Term};
 use crate::theme::Theme;
 use crate::tr;
 use crate::icons::{self, Icon};
-use crate::widgets::{self, Caption, Detail, Fact, Outline, Row, Spec, SystemCard, SystemMark, Tone, Trail};
+use crate::widgets::{self, Caption, ConfirmTone, Detail, Fact, Outline, Row, Spec, SystemCard, SystemMark, Tone, Trail};
 use skyward_info::{DeviceInfo, BUILDER, VERSION};
 use skyward_install::{Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::Progress;
@@ -114,39 +114,40 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
 
 /// Label and colour of each swipe-to-confirm control: the filesystem
 /// page's as `s` says what it is to do.
-pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
+pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, ConfirmTone) {
     const INSTALL: Text = ["滑动以安装", "滑動以安裝", "Slide to install"];
-    let (label, danger) = match which {
+    let (label, tone) = match which {
         Confirm::Filesystem => match s.fs_action {
-            FsAction::Repair => (["滑动以修复", "滑動以修復", "Slide to repair"], true),
-            FsAction::Remake(_) => (["滑动以更换", "滑動以更換", "Slide to change"], true),
+            FsAction::Repair => (["滑动以修复", "滑動以修復", "Slide to repair"], ConfirmTone::Danger),
+            FsAction::Remake(_) => (["滑动以更换", "滑動以更換", "Slide to change"], ConfirmTone::Danger),
         },
         Confirm::Reboot => match s.reboot {
             // In the order REBOOT_TARGETS lists them: system, recovery,
             // bootloader, EDL, power off.
-            0 => (["滑动以重启到系统", "滑動以重新啟動到系統", "Slide to reboot to system"], false),
-            1 => (["滑动以重启到恢复模式", "滑動以重新啟動到復原模式", "Slide to reboot to recovery"], false),
-            2 => (["滑动以重启到 Bootloader", "滑動以重新啟動到 Bootloader", "Slide to reboot to bootloader"], false),
-            3 => (["滑动以进入 EDL", "滑動以進入 EDL", "Slide to enter EDL"], true),
-            _ => (["滑动以关机", "滑動以關機", "Slide to power off"], false),
+            0 => (["滑动以重启到系统", "滑動以重新啟動到系統", "Slide to reboot to system"], ConfirmTone::Accent),
+            1 => (["滑动以重启到恢复模式", "滑動以重新啟動到復原模式", "Slide to reboot to recovery"], ConfirmTone::Accent),
+            // The bootloader wears Xiaomi's own orange, as its fastboot does.
+            2 => (["滑动以重启到 Bootloader", "滑動以重新啟動到 Bootloader", "Slide to reboot to bootloader"], ConfirmTone::Brand),
+            3 => (["滑动以进入 EDL", "滑動以進入 EDL", "Slide to enter EDL"], ConfirmTone::Danger),
+            _ => (["滑动以关机", "滑動以關機", "Slide to power off"], ConfirmTone::Accent),
         },
-        Confirm::Wipe => (["滑动以清除", "滑動以清除", "Slide to wipe"], true),
-        Confirm::Flash => (["滑动以刷入", "滑動以刷入", "Slide to flash"], true),
-        Confirm::Backup => (["滑动以备份", "滑動以備份", "Slide to back up"], false),
-        Confirm::Restore => (["滑动以恢复", "滑動以還原", "Slide to restore"], true),
-        Confirm::Slot => (["滑动以切换", "滑動以切換", "Slide to switch"], true),
-        Confirm::FactoryReset => (["滑动以恢复出厂设置", "滑動以恢復原廠設定", "Slide to factory reset"], true),
-        Confirm::DeleteEntry | Confirm::DeleteBackup => (["滑动以删除", "滑動以刪除", "Slide to delete"], true),
-        Confirm::Install => (INSTALL, false),
-        Confirm::InstallWipe => (["滑动以安装并清除", "滑動以安裝並清除", "Slide to install and wipe"], true),
-        Confirm::RunScript => (INSTALL, true),
-        Confirm::Merge => (["滑动以合并", "滑動以合併", "Slide to merge"], true),
-        Confirm::Relabel => (["滑动以修复", "滑動以修復", "Slide to fix"], true),
-        Confirm::SwitchSystem => (["滑动以切换并重启", "滑動以切換並重新啟動", "Slide to switch and reboot"], false),
-        Confirm::RemoveSystem => (["滑动以删除", "滑動以刪除", "Slide to remove"], true),
-        Confirm::InstallSystem => (INSTALL, false),
+        Confirm::Wipe => (["滑动以清除", "滑動以清除", "Slide to wipe"], ConfirmTone::Danger),
+        Confirm::Flash => (["滑动以刷入", "滑動以刷入", "Slide to flash"], ConfirmTone::Danger),
+        Confirm::Backup => (["滑动以备份", "滑動以備份", "Slide to back up"], ConfirmTone::Accent),
+        Confirm::Restore => (["滑动以恢复", "滑動以還原", "Slide to restore"], ConfirmTone::Danger),
+        Confirm::Slot => (["滑动以切换", "滑動以切換", "Slide to switch"], ConfirmTone::Danger),
+        Confirm::FactoryReset => (["滑动以恢复出厂设置", "滑動以恢復原廠設定", "Slide to factory reset"], ConfirmTone::Danger),
+        Confirm::DeleteEntry | Confirm::DeleteBackup => (["滑动以删除", "滑動以刪除", "Slide to delete"], ConfirmTone::Danger),
+        Confirm::Install => (INSTALL, ConfirmTone::Accent),
+        Confirm::InstallWipe => (["滑动以安装并清除", "滑動以安裝並清除", "Slide to install and wipe"], ConfirmTone::Danger),
+        Confirm::RunScript => (INSTALL, ConfirmTone::Danger),
+        Confirm::Merge => (["滑动以合并", "滑動以合併", "Slide to merge"], ConfirmTone::Danger),
+        Confirm::Relabel => (["滑动以修复", "滑動以修復", "Slide to fix"], ConfirmTone::Danger),
+        Confirm::SwitchSystem => (["滑动以切换并重启", "滑動以切換並重新啟動", "Slide to switch and reboot"], ConfirmTone::Accent),
+        Confirm::RemoveSystem => (["滑动以删除", "滑動以刪除", "Slide to remove"], ConfirmTone::Danger),
+        Confirm::InstallSystem => (INSTALL, ConfirmTone::Accent),
     };
-    (s.lang.pick(label), danger)
+    (s.lang.pick(label), tone)
 }
 
 /// The home page's large title, and what its search bar and the search
@@ -166,6 +167,7 @@ const REBOOT_TARGETS: [(Text, Option<Text>); 5] = [
 /// titles.
 const WLAN: Text = ["WLAN", "Wi-Fi", "Wi-Fi"];
 const KEEP_ON_DATA: Text = ["密码存在 data 分区", "密碼存在 data 分區", "Keep password on data"];
+const WLAN_AUTO: Text = ["开机自动打开", "開機自動開啟", "Turn on at start"];
 const DECRYPT: Text = ["解密", "解密", "Decrypt"];
 const ADVANCED: Text = ["高级", "進階", "Advanced"];
 const SETTINGS: Text = ["设置", "設定", "Settings"];
@@ -403,34 +405,15 @@ pub fn settings(cx: &Ctx) -> Frame {
     y = widgets::section(&mut c, t, f, y, l.pick(["调试", "偵錯", "Debugging"]));
     let debug = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal)]);
     out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));
-    y = widgets::section(&mut c, t, f, debug.bottom, l.pick(["关于", "關於", "About"]));
-    let mut rows = vec![Row::new(l.pick(ABOUT)).trail(Trail::Value(VERSION))];
-    let mut opens = vec![Action::Open(Screen::About)];
     if s.offers(Screen::SkywardUpdate) {
-        let row = Row::new(l.pick(SKYWARD_UPDATE));
-        rows.push(match skyward_value(cx) {
-            Some(value) => row.trail(Trail::Value(value)),
-            None => row,
-        });
-        opens.push(Action::Open(Screen::SkywardUpdate));
+        y = widgets::section(&mut c, t, f, debug.bottom, l.pick(["关于", "關於", "About"]));
+        let about = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(SKYWARD_UPDATE))]);
+        out.extend(hits(&about.rows, &[Action::Open(Screen::SkywardUpdate)]));
+        y = about.bottom;
+    } else {
+        y = debug.bottom;
     }
-    let about = widgets::list(&mut c, t, f, y, &rows);
-    out.extend(hits(&about.rows, &opens));
-    Frame::new(t, fit(c, t, about.bottom), out, l.pick(SETTINGS), top)
-}
-
-/// What the settings page says beside its Skyward update entry: an update
-/// under way, or a newer release found.
-fn skyward_value(cx: &Ctx) -> Option<&'static str> {
-    let (s, l) = (cx.state, cx.state.lang);
-    if s.updating_skyward() {
-        return Some(l.pick(["正在更新", "正在更新", "Updating"]));
-    }
-    match (s.skyward_newest(), &s.skyward_job) {
-        (_, Some(SkywardJob { outcome: Some(SkywardEnd::Updated(_)), .. })) => Some(l.pick(["已更新", "已更新", "Updated"])),
-        (Some(n), _) if n.newer && n.build.is_some() => Some(l.pick(["有新版本", "有新版本", "New version"])),
-        _ => None,
-    }
+    Frame::new(t, fit(c, t, y), out, l.pick(SETTINGS), top)
 }
 
 /// How long the screen stays on with nothing touched, opened from the
@@ -867,8 +850,8 @@ pub fn reboot(cx: &Ctx) -> Frame {
         out.extend(hits(&slots.rows, &[Action::Open(Screen::Slot)]));
         y = slots.bottom;
     }
-    let (label, danger) = confirm_label(Confirm::Reboot, cx.state);
-    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, danger, s.confirm);
+    let (label, tone) = confirm_label(Confirm::Reboot, cx.state);
+    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, tone, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Reboot) });
     Frame::new(t, c, out, l.pick(REBOOT), top)
 }
@@ -1250,8 +1233,8 @@ pub fn installing(cx: &Ctx) -> Frame {
                 Pick::ALL.iter().zip(&titles).map(|(p, title)| Row::new(title).trail(Trail::Check(*p == choice.pick))).collect();
             let picks = widgets::list(&mut c, t, f, y, &rows);
             out.extend(hits(&picks.rows, &Pick::ALL.map(Action::FlashSlots)));
-            let (label, danger) = confirm_label(Confirm::Flash, cx.state);
-            let track = widgets::confirm(&mut c, t, f, picks.bottom + t.m.dp(28.0), label, danger, s.confirm);
+            let (label, tone) = confirm_label(Confirm::Flash, cx.state);
+            let track = widgets::confirm(&mut c, t, f, picks.bottom + t.m.dp(28.0), label, tone, s.confirm);
             out.push(Hit { rect: track, action: Action::Confirm(Confirm::Flash) });
             let note = l.pick(match s.source {
                 Source::Computer => [
@@ -1297,8 +1280,8 @@ pub fn installing(cx: &Ctx) -> Frame {
                 (title, GREEN, Icon::Install, detail, Confirm::Install)
             };
             let y = widgets::list(&mut c, t, f, top, &[standing(&title, color, icon, &detail)]).bottom;
-            let (label, danger) = confirm_label(which, cx.state);
-            let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, danger, s.confirm);
+            let (label, tone) = confirm_label(which, cx.state);
+            let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, tone, s.confirm);
             out.push(Hit { rect: track, action: Action::Confirm(which) });
             let note = l.pick(["返回将取消安装，不会写入任何内容。", "返回將取消安裝，不會寫入任何內容。", "Going back cancels the install without writing anything."]);
             widgets::footnote(&mut c, t, f, track.y + track.h, note)
@@ -1377,8 +1360,8 @@ pub fn installing(cx: &Ctx) -> Frame {
                 "The room chosen is set aside in the data partition for the second system's files, can't be changed once it's installed, and comes back when the second system is removed. Nothing of the main system's partitions is written.",
             ]);
             let y = widgets::footnote(&mut c, t, f, list.bottom, note);
-            let (label, danger) = confirm_label(Confirm::InstallSystem, cx.state);
-            let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+            let (label, tone) = confirm_label(Confirm::InstallSystem, cx.state);
+            let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
             out.push(Hit { rect: track, action: Action::Confirm(Confirm::InstallSystem) });
             let note = l.pick(["返回将取消安装，不会写入任何内容。", "返回將取消安裝，不會寫入任何內容。", "Going back cancels the install without writing anything."]);
             widgets::footnote(&mut c, t, f, track.y + track.h, note)
@@ -1400,8 +1383,8 @@ pub fn installing(cx: &Ctx) -> Frame {
             if let Some(note) = fmt::snapshot_script_note(l, &i.snapshot) {
                 y = widgets::footnote(&mut c, t, f, y, note);
             }
-            let (label, danger) = confirm_label(Confirm::RunScript, cx.state);
-            let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, danger, s.confirm);
+            let (label, tone) = confirm_label(Confirm::RunScript, cx.state);
+            let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, tone, s.confirm);
             out.push(Hit { rect: track, action: Action::Confirm(Confirm::RunScript) });
             let note = l.pick(["返回将取消安装，不会运行安装脚本。", "返回將取消安裝，不會執行安裝指令碼。", "Going back cancels the install without running the script."]);
             widgets::footnote(&mut c, t, f, track.y + track.h, note)
@@ -1768,8 +1751,8 @@ pub fn wipe(cx: &Ctx) -> Frame {
         "Wiping app data or app caches needs the data partition decrypted first. What is wiped can't be brought back.",
     ]);
     let y = widgets::footnote(&mut c, t, f, y, note);
-    let (label, danger) = confirm_label(Confirm::Wipe, cx.state);
-    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+    let (label, tone) = confirm_label(Confirm::Wipe, cx.state);
+    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Wipe) });
     Frame::new(t, fit(c, t, track.y + track.h), out, l.pick(["清除数据", "清除資料", "Wipe data"]), top)
 }
@@ -1882,8 +1865,8 @@ pub fn backup(cx: &Ctx) -> Frame {
         "Backups go in the Skyward/backups folder, named by when they began.",
     ]);
     let y = widgets::footnote(&mut c, t, f, options.bottom, note);
-    let (label, danger) = confirm_label(Confirm::Backup, cx.state);
-    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+    let (label, tone) = confirm_label(Confirm::Backup, cx.state);
+    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Backup) });
     Frame::new(t, fit(c, t, track.y + track.h), out, l.pick(["备份", "備份", "Backup"]), top)
 }
@@ -1995,8 +1978,8 @@ pub fn restore_backup(cx: &Ctx) -> Frame {
                     );
                     y = widgets::footnote(&mut c, t, f, y, &warn);
                 }
-                let (label, danger) = confirm_label(Confirm::Restore, cx.state);
-                let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+                let (label, tone) = confirm_label(Confirm::Restore, cx.state);
+                let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
                 out.push(Hit { rect: track, action: Action::Confirm(Confirm::Restore) });
                 track.y + track.h
             }
@@ -2008,8 +1991,8 @@ pub fn restore_backup(cx: &Ctx) -> Frame {
     if s.asking_delete {
         let ask = l.pick(["删除该备份？删除后无法恢复。", "刪除這份備份？刪除後無法復原。", "Delete this backup? It can't be brought back."]);
         let y = widgets::footnote(&mut c, t, f, delete.bottom, ask);
-        let (label, danger) = confirm_label(Confirm::DeleteBackup, cx.state);
-        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+        let (label, tone) = confirm_label(Confirm::DeleteBackup, cx.state);
+        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
         out.push(Hit { rect: track, action: Action::Confirm(Confirm::DeleteBackup) });
         bottom = track.y + track.h;
     }
@@ -2274,8 +2257,8 @@ pub fn relabel(cx: &Ctx) -> Frame {
         if let Some(note) = note {
             y = widgets::footnote(&mut c, t, f, y, l.pick(note));
         }
-        let (label, danger) = confirm_label(Confirm::Relabel, cx.state);
-        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+        let (label, tone) = confirm_label(Confirm::Relabel, cx.state);
+        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
         out.push(Hit { rect: track, action: Action::Confirm(Confirm::Relabel) });
         return Frame::new(t, c, out, title, top);
     };
@@ -2409,8 +2392,8 @@ pub fn filesystem(cx: &Ctx) -> Frame {
     if !row.others.is_empty() {
         y = widgets::footnote(&mut c, t, f, y, l.pick(["更换后，分区中的内容无法恢复。", "更換後，分割區中的內容無法復原。", "Once changed, what the partition held can't be brought back."]));
     }
-    let (label, danger) = confirm_label(Confirm::Filesystem, s);
-    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+    let (label, tone) = confirm_label(Confirm::Filesystem, s);
+    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Filesystem) });
     Frame::new(t, fit(c, t, track.y + track.h), out, partition_title(l, &row.name), top)
 }
@@ -2615,8 +2598,8 @@ pub fn update(cx: &Ctx) -> Frame {
     y = if y == top { widgets::section_first(&mut c, t, f, y, merging) } else { widgets::section(&mut c, t, f, y, merging) };
     y = widgets::list(&mut c, t, f, y, &[row]).bottom;
     if s.update == Standing::Waiting {
-        let (label, danger) = confirm_label(Confirm::Merge, cx.state);
-        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, danger, s.confirm);
+        let (label, tone) = confirm_label(Confirm::Merge, cx.state);
+        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(28.0), label, tone, s.confirm);
         out.push(Hit { rect: track, action: Action::Confirm(Confirm::Merge) });
         let note = l.pick(["合并后无法回到更新前的系统。", "合併後無法回到更新前的系統。", "Once merged, the system from before the update can't come back."]);
         y = widgets::footnote(&mut c, t, f, track.y + track.h, note);
@@ -2761,9 +2744,9 @@ pub fn skyward_update(cx: &Ctx) -> Frame {
     let y = widgets::section(&mut c, t, f, y, l.pick(OPTIMIZED_BY));
     let y = widgets::info_card(&mut c, t, f, y, &[("是山上耕田呀", "0.0.1".to_string())]);
     let y = widgets::section(&mut c, t, f, y, l.pick(CODING_AGENT));
-    let y = widgets::info_card(&mut c, t, f, y, &[("DeepSeek Harness", l.pick(TOKENS_SPENT).to_string())]);
+    let y = widgets::info_card(&mut c, t, f, y, &[("DeepSeek Harness", String::new())]);
     let y = widgets::section(&mut c, t, f, y, l.pick(BASE_MODEL));
-    let y = widgets::info_card(&mut c, t, f, y, &[("DeepSeek V4.1 Flash", l.pick(TEN_YUAN).to_string())]);
+    let y = widgets::info_card(&mut c, t, f, y, &[("DeepSeek V4.1 Flash", String::new())]);
     Frame::new(t, fit(c, t, y), out, l.pick(SKYWARD_UPDATE), top)
 }
 
@@ -2773,8 +2756,6 @@ const PROJECT_AUTHOR: Text = ["项目原作者", "專案原作者", "Original au
 const OPTIMIZED_BY: Text = ["项目优化者", "專案優化者", "Optimized by"];
 const CODING_AGENT: Text = ["编码 agent", "編碼 agent", "Coding agent"];
 const BASE_MODEL: Text = ["底层模型", "底層模型", "Base model"];
-const TOKENS_SPENT: Text = ["截至目前版本 消耗超过了一亿词元！", "截至目前版本 消耗超過了一億詞元！", "More than a hundred million tokens spent so far!"];
-const TEN_YUAN: Text = ["改这么些东西可花了我十块钱呢！", "改這麼些東西可花了我十塊錢呢！", "All these changes cost me ten yuan!"];
 
 /// The WLAN switch; then the network chosen and how joining it goes, and
 /// the networks in range, strongest first.
@@ -2787,29 +2768,22 @@ pub fn wlan(cx: &Ctx) -> Frame {
     let on = !matches!(w.power, Power::Off | Power::Failed(_));
     let switch = widgets::list(&mut c, t, f, top, &[
         Row::new(l.pick(WLAN)).trail(Trail::Switch(on)),
+        Row::new(l.pick(WLAN_AUTO)).trail(Trail::Switch(s.wlan_auto)),
         Row::new(l.pick(KEEP_ON_DATA)).trail(Trail::Switch(s.wlan_kept)),
     ]);
-    out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan), Action::Toggle(Switch::WlanKept)]));
+    out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan), Action::Toggle(Switch::WlanAuto), Action::Toggle(Switch::WlanKept)]));
     let kept = if s.wlan_kept {
-        l.pick([
-            "密码只写进 data 分区，未解密时读不到，更安全；解密之前 WLAN 不会自动连上。",
-            "密碼只寫進 data 分割區，未解密時讀不到，更安全；解密之前 Wi-Fi 不會自動連上。",
-            "The password is written only to the data partition, which stays closed until it is unlocked: safer, but Wi-Fi joins nothing before then.",
-        ])
+        l.pick(["密码只写进 data 分区，更安全；解密前 WLAN 不会自动连。", "密碼只寫進 data 分割區，更安全；解密前 Wi-Fi 不會自動連。", "The password is written only to the data partition: safer, but Wi-Fi joins nothing before it is unlocked."])
     } else {
-        l.pick([
-            "密码写在 persist 分区，每次开机都能直接用；该分区不加密，能读写它的人可以看到密码。",
-            "密碼寫在 persist 分割區，每次開機都能直接用；該分割區不加密，能讀寫它的人可以看到密碼。",
-            "The password is written to the persist partition, which every start reads: it is not encrypted, so whoever can read it can see the password.",
-        ])
+        l.pick(["密码写在 persist 分区，开机即可用；该分区不加密，能读到的人看得到密码。", "密碼寫在 persist 分割區，開機即可用；該分割區不加密，能讀到的人看得到密碼。", "The password is written to the persist partition, which every start reads; it is not encrypted, so whoever can read it can see it."])
     };
-    let mut y = widgets::footnote(&mut c, t, f, switch.bottom, kept);
+    let mut y = widgets::footnote(&mut c, t, f, switch.bottom + t.m.dp(6.0), kept);
     match &w.power {
         Power::Off => {
             let note = l.pick([
-                "开启后，可连接 WLAN 下载系统更新和 Skyward 新版本。",
-                "開啟後，可連接 Wi-Fi 下載系統更新和 Skyward 新版本。",
-                "When on, system updates and new versions of Skyward can download over Wi-Fi.",
+                "开启后，可连接 WLAN 下载系统更新。",
+                "開啟後，可連接 Wi-Fi 下載系統更新。",
+                "When on, system updates can download over Wi-Fi.",
             ]);
             y = widgets::footnote(&mut c, t, f, y, note)
         }
@@ -3167,8 +3141,8 @@ pub fn file_info(cx: &Ctx) -> Frame {
             false => tr!(l, "删除\"{name}\"？删除后无法恢复。", "刪除「{name}」？刪除後無法復原。", "Delete “{name}”? It can't be brought back."),
         };
         let y = widgets::footnote(&mut c, t, f, actions.bottom, &what);
-        let (label, danger) = confirm_label(Confirm::DeleteEntry, cx.state);
-        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+        let (label, tone) = confirm_label(Confirm::DeleteEntry, cx.state);
+        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
         out.push(Hit { rect: track, action: Action::Confirm(Confirm::DeleteEntry) });
         bottom = track.y + track.h;
     }
@@ -3571,8 +3545,8 @@ pub fn slot(cx: &Ctx) -> Frame {
         "If the other slot holds no whole system, the phone won't start after switching.",
     ]);
     let y = widgets::footnote(&mut c, t, f, list.bottom, note);
-    let (label, danger) = confirm_label(Confirm::Slot, cx.state);
-    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+    let (label, tone) = confirm_label(Confirm::Slot, cx.state);
+    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Slot) });
     Frame::new(t, c, out, title, top)
 }
@@ -3667,8 +3641,8 @@ pub fn systems(cx: &Ctx) -> Frame {
         match (chosen, fmt::snapshot_system_note(l, &i.snapshot)) {
             (Who::Other, Some(note)) => y = widgets::footnote(&mut c, t, f, y, note),
             _ => {
-                let (label, danger) = confirm_label(Confirm::SwitchSystem, s);
-                let track = widgets::confirm(&mut c, t, f, y + t.m.dp(12.0), label, danger, s.confirm);
+                let (label, tone) = confirm_label(Confirm::SwitchSystem, s);
+                let track = widgets::confirm(&mut c, t, f, y + t.m.dp(12.0), label, tone, s.confirm);
                 out.push(Hit { rect: track, action: Action::Confirm(Confirm::SwitchSystem) });
                 y = track.y + track.h;
             }
@@ -3734,8 +3708,8 @@ pub fn systems(cx: &Ctx) -> Frame {
                 ]),
             };
             let y2 = widgets::footnote(&mut c, t, f, y, ask);
-            let (label, danger) = confirm_label(Confirm::RemoveSystem, s);
-            let track = widgets::confirm(&mut c, t, f, y2 + t.m.dp(24.0), label, danger, s.confirm);
+            let (label, tone) = confirm_label(Confirm::RemoveSystem, s);
+            let track = widgets::confirm(&mut c, t, f, y2 + t.m.dp(24.0), label, tone, s.confirm);
             out.push(Hit { rect: track, action: Action::Confirm(Confirm::RemoveSystem) });
             y = track.y + track.h;
         }
@@ -3939,8 +3913,8 @@ pub fn cant_start(cx: &Ctx) -> Frame {
     let choices = widgets::list(&mut c, t, f, y, &rows);
     out.extend(hits(&choices.rows, &[Action::RebootTo(Target::System), Action::Dismiss]));
     let y = widgets::footnote(&mut c, t, f, choices.bottom, l.pick(["恢复出厂设置后，数据无法恢复。", "恢復原廠設定後，資料無法復原。", "Data a factory reset wipes can't be brought back."]));
-    let (label, danger) = confirm_label(Confirm::FactoryReset, cx.state);
-    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
+    let (label, tone) = confirm_label(Confirm::FactoryReset, cx.state);
+    let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, tone, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::FactoryReset) });
     Frame { back: false, ..Frame::new(t, c, out, l.pick(["无法启动系统", "無法啟動系統", "Can't start the system"]), top) }
 }
