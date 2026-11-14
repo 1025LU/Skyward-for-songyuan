@@ -649,7 +649,7 @@ enum Press {
     Spent,
 }
 
-const TOAST_MS: u64 = 2000;
+const TOAST_MS: u64 = 4000;
 /// How long a text field's cursor shows and then hides, as the stock
 /// fields blink it.
 const BLINK_MS: u64 = 500;

@@ -915,15 +915,26 @@ fn chip(t: &Theme, (cx, cy, r): (f32, f32, f32)) -> (Canvas, i32, i32) {
     (c, x0, y0)
 }
 
-/// A short message in a dark capsule above the bottom edge.
+/// A short message in a dark capsule above the bottom edge. A message too
+/// long for one line wraps inside the screen's width, and the capsule grows
+/// to hold it.
 pub fn toast(c: &mut Canvas, t: &Theme, f: &Fonts, text: &str) {
     let m = &t.m;
     let px = m.sub_px;
-    let w = c.text_width(&f.heading, text, px) + m.dp(40.0);
-    let h = m.dp(44.0);
-    let (x, y) = ((m.w as f32 - w) / 2.0, m.h as f32 - m.dp(120.0));
+    let max_w = m.w as f32 - m.margin * 2.0 - m.dp(40.0);
+    let lines = wrap(c, &f.heading, text, px, max_w);
+    let widest = lines.iter().map(|l| c.text_width(&f.heading, l, px)).fold(0.0_f32, f32::max);
+    let w = widest + m.dp(40.0);
+    let line_h = m.dp(20.0);
+    let extra = lines.len().saturating_sub(1) as f32 * line_h;
+    let h = m.dp(44.0) + extra;
+    let (x, y) = ((m.w as f32 - w) / 2.0, m.h as f32 - m.dp(120.0) - extra);
     c.fill_round_rect(x, y, w, h, h / 2.0, Rgba::rgb(30, 30, 30).with_alpha(235));
-    c.text_center(&f.heading, text, m.w as f32 / 2.0, y + h / 2.0, px, Rgba::rgb(255, 255, 255));
+    let mut cy = y + h / 2.0 - extra / 2.0;
+    for line in &lines {
+        c.text_center(&f.heading, line, m.w as f32 / 2.0, cy, px, Rgba::rgb(255, 255, 255));
+        cy += line_h;
+    }
 }
 
 /// The home page's search bar in `r`, at `level` of its strength, without
