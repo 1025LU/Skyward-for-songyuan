@@ -94,7 +94,7 @@ impl App {
             *checking = false;
         }
         self.refresh();
-        self.report(&why, now);
+        self.report(&crate::fmt::failure_said(self.state.lang, &why), now);
     }
 
     /// Open the data partition, the decrypt page saying so meanwhile.

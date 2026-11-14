@@ -1508,6 +1508,34 @@ pub fn screenshot_name(unix_ms: i64, zone: usize) -> String {
 /// What the terminal is told while a command it runs holds it.
 pub const TERMINAL_BUSY: Text = ["终端正在运行命令，请结束后重试", "終端機正在執行指令，請結束後重試", "The terminal is running a command. End it, then try again"];
 
+/// A failure the recovery's own work reports, said in the pages' language
+/// where it is one they know: what the secure world answers to a screen
+/// lock, and the services the recovery has not started yet. Anything else
+/// is left as the recovery said it.
+pub fn failure_said(l: Lang, why: &str) -> String {
+    if why.contains("incorrect credential") {
+        return l.pick(["锁屏密码错误", "螢幕鎖定密碼錯誤", "Wrong screen lock"]).to_string();
+    }
+    if let Some(rest) = why.split("credential retries delayed by ").nth(1) {
+        let seconds = rest.split(' ').next().unwrap_or("");
+        return tr!(l, "密码错误次数过多，请 {seconds} 秒后再试", "密碼錯誤次數過多，請 {seconds} 秒後再試", "Too many wrong tries: try again in {seconds} seconds");
+    }
+    if why.contains("credential retries delayed") {
+        return l.pick(["密码错误次数过多，请稍后再试", "密碼錯誤次數過多，請稍後再試", "Too many wrong tries: try again later"]).to_string();
+    }
+    for (needle, said) in [
+        ("key service has to be started first", ["密钥服务尚未启动，请稍后重试", "密鑰服務尚未啟動，請稍後重試", "The key service is not running yet: try again shortly"]),
+        ("credential service has to be started first", ["凭据服务尚未启动，请稍后重试", "憑據服務尚未啟動，請稍後重試", "The credential service is not running yet: try again shortly"]),
+        ("weaver has to be started first", ["weaver 服务尚未启动，请稍后重试", "weaver 服務尚未啟動，請稍後重試", "The weaver is not running yet: try again shortly"]),
+        ("boot control has to be started first", ["启动控制服务尚未启动", "啟動控制服務尚未啟動", "The boot control is not running yet"]),
+    ] {
+        if why.contains(needle) {
+            return l.pick(said).to_string();
+        }
+    }
+    why.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

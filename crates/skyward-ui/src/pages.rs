@@ -686,25 +686,27 @@ pub fn specs(cx: &Ctx) -> Frame {
 /// a user whose files wait on one is asked with the control that lock is
 /// answered with, from the start.
 pub fn decrypt(cx: &Ctx) -> Frame {
-    let (c, l) = (page(cx), cx.state.lang);
+    let l = cx.state.lang;
     match &cx.state.data {
-        Data::Locked { user, keys, checking } => code(cx, c, *user, *keys, *checking, false),
+        Data::Locked { user, keys, checking } => code(cx, page(cx), *user, *keys, *checking, false),
         // The keys stand as soon as the screen lights, so what is asked of the
         // user is there to see; until the recovery knows which screen lock to
         // read they are drawn faded and take no touch.
-        Data::Closed | Data::Opening => code(cx, c, 0, Keys::Digits, false, true),
+        Data::Closed | Data::Opening => code(cx, page(cx), 0, Keys::Digits, false, true),
+        // Where the partition stands: a reason that needs more than the page
+        // holds wraps and the page scrolls, so none of it meets the edge.
         Data::Open => data_status(
             cx,
-            c,
+            long_page(cx),
             Icon::Folder,
             l.pick(["data 分区已解密", "data 分割區已解密", "The data partition is decrypted"]),
             Some(l.pick(["你可以在「文件管理」中查看本机文件", "你可以在「檔案管理」中查看本機檔案", "You can see the phone's files in File manager"])),
             None,
         ),
-        Data::Failed(why) => data_status(cx, c, Icon::Lock, l.pick(["未能打开 data 分区", "無法開啟 data 分割區", "Couldn't open the data partition"]), None, Some(why)),
+        Data::Failed(why) => data_status(cx, long_page(cx), Icon::Lock, l.pick(["未能打开 data 分区", "無法開啟 data 分割區", "Couldn't open the data partition"]), None, Some(why)),
         Data::Erased => data_status(
             cx,
-            c,
+            long_page(cx),
             Icon::Wipe,
             l.pick(DATA_ERASED),
             Some(l.pick(["下次开机时将重新创建", "下次開機時將重新建立", "It's made anew when the phone next starts"])),
@@ -723,20 +725,26 @@ fn data_status(cx: &Ctx, mut c: Canvas, icon: Icon, title: &str, note: Option<&s
     c.fill_circle(x, sign_cy, m.dp(30.0), t.pal.card);
     icons::glyph(&mut c, icon, x, sign_cy, m.dp(40.0), t.pal.accent);
     c.text_center(&f.heading, title, x, sign_cy + m.dp(64.0), m.dp(24.0), t.pal.text);
+    let mut y = sign_cy + m.dp(98.0);
     if let Some(note) = note {
-        c.text_center(&f.body, note, x, sign_cy + m.dp(98.0), m.sub_px, t.pal.subtitle);
+        c.text_center(&f.body, note, x, y, m.sub_px, t.pal.subtitle);
+        y += m.dp(28.0);
     }
     let mut out = Vec::new();
     if let Some(why) = why {
-        widgets::paragraph(&mut c, t, f, sign_cy + m.dp(88.0), why);
-        let again = widgets::button(&mut c, t, f, m.h as f32 * 0.62, l.pick(["重试", "重試", "Try again"]));
+        // The reason wraps as far as it needs, and what follows it follows
+        // it: the page scrolls rather than cutting any of it off.
+        let said = fmt::failure_said(l, why);
+        let bottom = widgets::paragraph(&mut c, t, f, y, &said);
+        let again = widgets::button(&mut c, t, f, bottom + t.m.card_gap, l.pick(["重试", "重試", "Try again"]));
         out.push(Hit { rect: again, action: Action::OpenData });
+        y = again.y + again.h + t.m.card_gap;
     }
-    let leave_cy = m.h as f32 - m.dp(64.0);
+    let leave_cy = (m.h as f32 - m.dp(64.0)).max(y + m.dp(32.0));
     let leave = l.pick(if matches!(cx.state.data, Data::Open | Data::Erased) { ["完成", "完成", "Done"] } else { NOT_NOW });
     c.text_center(&f.heading, leave, x, leave_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), leave_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, back: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
+    Frame { header: false, back: false, ..Frame::new(t, fit(c, t, leave_cy + m.dp(40.0)), out, l.pick(DECRYPT), 0.0) }
 }
 
 /// What leaves the decrypt page with the data partition left as it is.
