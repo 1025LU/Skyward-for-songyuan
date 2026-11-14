@@ -103,7 +103,7 @@ pub fn start(steps: &[Step], libraries: Option<&Path>) -> Result<()> {
     for step in steps {
         match step {
             Step::Start(program) => {
-                crate::services::start(std::slice::from_ref(program.as_ref()), libraries)?;
+                crate::services::start(std::slice::from_ref(program.as_ref()), libraries, true)?;
             }
             Step::ServeElements => {
                 let readers = skyward_omapi::start()?;

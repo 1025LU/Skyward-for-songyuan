@@ -57,7 +57,7 @@ const LIBRARY_PATH: &str = "LD_LIBRARY_PATH";
 ///
 /// `libraries` is a directory of shared libraries every one of them may
 /// need, searched after whatever it names itself.
-pub fn start(programs: &[Started], libraries: Option<&Path>) -> Result<Option<thread::JoinHandle<()>>> {
+pub fn start(programs: &[Started], libraries: Option<&Path>, block: bool) -> Result<Option<thread::JoinHandle<()>>> {
     let known = accounts();
     // What each program says it will be ready with is waited on after all
     // of them are started, on a thread of its own: a program whose
@@ -89,6 +89,19 @@ pub fn start(programs: &[Started], libraries: Option<&Path>) -> Result<Option<th
         pending.push(waiting);
     }
     if pending.is_empty() {
+        return Ok(None);
+    }
+    // A caller whose next step needs the programs running - the secure
+    // element service, which asks each secure element for its readers as
+    // soon as it is served - waits for them here. The recovery itself does
+    // not: its screen comes up without them, and a program that never says
+    // it is ready holds up nothing.
+    if block {
+        for s in pending {
+            if let Err(e) = ready(&s) {
+                let _ = skyward_sys::kmsg(&format!("{e:#}"));
+            }
+        }
         return Ok(None);
     }
     let waiter = thread::Builder::new()

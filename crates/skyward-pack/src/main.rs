@@ -87,9 +87,6 @@ enum Cmd {
         /// the installed system's vendor_dlkm.
         #[arg(long = "module")]
         modules: Vec<String>,
-        /// Required when the device config starts the Thales OMAPI bridge.
-        #[arg(long)]
-        omapi: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -151,7 +148,7 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, update_skyward, binary, system_init, config, font, mono, mono_license, firmware, modules, omapi, out } => {
+        Cmd::Recovery { stock, update_skyward, binary, system_init, config, font, mono, mono_license, firmware, modules, out } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
@@ -169,13 +166,6 @@ fn main() -> Result<()> {
                     ensure!(old.device.codename == device.device.codename, "the saved Skyward image is for {}, but the config is for {}", old.device.codename, device.device.codename);
                 }
                 None => ensure!(!update_skyward, "--update-skyward requires an existing Skyward image"),
-            }
-            if device.services.iter().any(|s| s.path == "/skyward/omapi-bridge") {
-                let bridge = omapi.context("this device requires --omapi pointing to the built Thales OMAPI bridge")?;
-                put(&mut rd, "skyward/omapi-bridge", 0o755, read(&bridge)?, update_skyward)?;
-                put(&mut rd, "skyward/omapi.xml", 0o644, OMAPI_MANIFEST.to_vec(), update_skyward)?;
-            } else {
-                ensure!(omapi.is_none(), "this device configuration does not use the OMAPI bridge");
             }
             rd.replace(paths::RECOVERY, read(&binary)?)?;
             // The libraries of the stock recovery's own user interface
@@ -325,7 +315,6 @@ const TASK_PROFILES: &[u8] = include_bytes!("task_profiles.json");
 /// The init rules that give the USB port file transfer beside adb, which a
 /// stock recovery does not offer.
 const MTP_RC: &[u8] = include_bytes!("mtp.rc");
-const OMAPI_MANIFEST: &[u8] = include_bytes!("../../../tools/omapi-bridge/manifest-omapi.xml");
 
 fn put(rd: &mut Ramdisk, name: &str, mode: u32, bytes: Vec<u8>, update: bool) -> Result<()> {
     if update && rd.find(name).is_some() {

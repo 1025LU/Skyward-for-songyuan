@@ -226,6 +226,24 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
+    // A run that ends without a word leaves the phone looping on the
+    // bootloader, the recovery having failed before it drew anything, so
+    // both ways out go to the kernel log: the next boot still has it, and
+    // "adb shell dmesg" there says what happened.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = skyward_sys::kmsg(&format!("skyward panicked: {info}"));
+        previous(info);
+    }));
+    let ended = run();
+    if let Err(e) = &ended {
+        let _ = skyward_sys::kmsg(&format!("skyward ended: {e:#}"));
+    }
+    ended
+}
+
+/// What the recovery does, whatever ends it.
+fn run() -> Result<()> {
     // init starts the recovery service by path with no arguments.
     let started_as = std::env::args_os().next().unwrap_or_default();
     let name = Path::new(&started_as).file_name().unwrap_or_default();
@@ -293,7 +311,7 @@ fn main() -> Result<()> {
             let props = skyward_info::installed_props(slot)?;
             let services: Vec<Started> = DeviceConfig::load(&config)?.services.into_iter().filter(|s| s.runs_on(&props)).map(Started::from).collect();
             let libraries = secure::libraries()?;
-            let _ = services::start(&services, libraries.as_deref())?;
+            let _ = services::start(&services, libraries.as_deref(), false)?;
             keys::start(&keys::found(slot, libraries.as_deref())?.steps?, libraries.as_deref())?;
             loop {
                 std::thread::park();
@@ -626,7 +644,7 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     }
     // The key service is one of those whose readiness is waited on in the
     // background, so the notes key is agreed on there too, after them.
-    let waiter = services::start(&services, libraries.as_deref())?;
+    let waiter = services::start(&services, libraries.as_deref(), false)?;
     let steps = found.context("make out from the phone's partitions how its keys are used")?;
     for line in keys::describe(&steps) {
         skyward_sys::kmsg(&format!("for the phone's keys: {}", line.replace("\n  ", ", ")))?;

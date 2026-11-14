@@ -153,67 +153,6 @@ groups = ["vendor_thales_weaver", "system", "drmrpc"]
 # user = "system"
 # groups = ["system", "drmrpc"]
 
-# OMAPI: the bridge this project builds (tools/omapi-bridge/out/omapi-bridge),
-# not the phone's own /mnt/system/bin/se_omapi, which needs the whole of
-# /mnt/system/lib64 on the search path and does not start without it. The
-# bridge is written for this Thales weaver: main.cpp:29 pins the path to
-# /odm/bin/hw/android.hardware.weaver-service.thales and serves no other
-# process, passing on what weaver asks to the eSE HAL above.
-# Its argument is not optional: main.cpp:227 exits with 2 unless argc is 2,
-# which is what the "exit status: 2" in an earlier log was. --weaver has it
-# look through /proc itself for the one process with that path and check
-# the uid is 2916, as the log shows weaver's to be.
-# An image built with this device takes --omapi tools/omapi-bridge/out/omapi-bridge.
-[[service]]
-path = "/skyward/omapi-bridge"
-args = ["--weaver"]
-libraries = ["/system/lib64", "/vendor/lib64"]
-description = "/skyward/omapi.xml"
-ready_service = "android.se.omapi.ISecureElementService/default"
-# It runs as root, and the same uid would not do. main.cpp:30 finds weaver
-# only through readlink("/proc/<pid>/exe"), and Skyward drops to the
-# service's uid with setresuid before exec (crates/skyward/src/services.rs:133),
-# which has the kernel set mm->dumpable to the value of
-# /proc/sys/fs/suid_dumpable, 0 by default. A process with dumpable 0 fails
-# ptrace_may_access for every caller without CAP_SYS_PTRACE, the same uid
-# included, so every readlink fails and main.cpp:239 returns 8 without a
-# word — which is what an image that already set user to
-# vendor_thales_weaver still did in log 19700101-081012. Root keeps every
-# capability (services.rs:109 drops none when capabilities is empty).
-user = "root"
-groups = ["root"]
-
-[wlan]
-modules = ["rfkill", "qca_cld3_peach_v2"]
-writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
-interface = "wlan0"
-supplicant = "/vendor/bin/hw/wpa_supplicant"
-libraries = ["/system/lib64", "/vendor/lib64"]
-service = "android.hardware.wifi.supplicant.ISupplicant/default"
-probe = "http://connect.rom.miui.com/generate_204"
-
-# The update server the stock updater of the Chinese system asks.
-[update]
-server = "https://update.miui.com/updates/miotaV3.php"
-
-# The stock build the recovery is made on: the Chinese system's OS4.0.4.0,
-# whose full update package on the phone maker's own download server holds
-# the recovery partition the recovery is built on top of.
-[stock]
-version = "OS4.0.4.0.XGNCNXM"
-package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS4.0.4.0.XGNCNXM/songyuan-ota_full-OS4.0.4.0.XGNCNXM-user-17.0-25df7572bd.zip"
-recovery = "de8fcb7522ab6fd8b366b8bd6f0f2f5150d969a4c4d5ce04c61d1f87f6a2353d"
-
-# qcom-hv-haptics (qcom,hv-haptics in its dtbo), with the click made from
-# samples at the motor's resonant frequency as on the 17 Ultra. The
-# strengths are the 17 Ultra's, which were felt on that phone's motor.
-[haptics]
-resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
-strength = { lightest = 0.25, strongest = 0.75 }
-
-# The boot slot: QTI's AIDL boot control, which says which slot the
-# bootloader starts from and moves it. Last, because nothing else needs it:
-# without it the phone works as well, only the boot slot page cannot ask.
 [[service]]
 path = "/vendor/bin/hw/android.hardware.boot-service.qti"
 libraries = ["/system/lib64", "/vendor/lib64", "/mnt/system/system/lib64"]
