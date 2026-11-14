@@ -111,7 +111,7 @@ mod tests {
         app.state.update_server = true;
         app.state.wlan = Some(Wlan::default());
         app.refresh();
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "nothing is asked without a network");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::Haptic, Effect::ReadUpdate], "nothing is asked without a network");
         assert!(tap(&mut app, &f, &i, Action::CheckUpdate).is_empty());
         assert_eq!(app.screen(), Screen::Wlan, "asking takes a network, which the WLAN page joins");
         app.key(Key::Back, 0);
@@ -150,12 +150,12 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);
         app.state.wlan = Some(connected("Skyward"));
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "a phone whose server is not known asks nothing");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::Haptic, Effect::ReadUpdate], "a phone whose server is not known asks nothing");
         app.key(Key::Back, 0);
         app.state.update_server = true;
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::CheckUpdate]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::Haptic, Effect::ReadUpdate, Effect::CheckUpdate]);
         app.update_checked(Err(Unanswered::Failed("update.miui.com did not answer".into())), Have::Nothing);
         app.key(Key::Back, 0);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate, Effect::CheckUpdate], "a failed check is tried again");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::Haptic, Effect::ReadUpdate, Effect::CheckUpdate], "a failed check is tried again");
     }
 }

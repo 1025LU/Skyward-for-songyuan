@@ -160,7 +160,7 @@ mod tests {
     fn the_decrypt_page_opens_the_partition_and_then_asks_with_the_users_own_control() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::OpenData], "no swipe first");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::Haptic, Effect::OpenData], "no swipe first");
         assert_eq!(app.state.data, Data::Opening);
         assert!(!keys_shown(&mut app, &f, &i) && app.frame(&f, &i).pattern.is_none(), "nothing to answer yet");
         app.data_waiting(Some((0, Keys::Pattern)));
@@ -168,7 +168,7 @@ mod tests {
         app.data_waiting(Some((0, Keys::Digits)));
         assert!(keys_shown(&mut app, &f, &i), "for a code, the keypad");
         app.key(Key::Back, 0);
-        assert!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)).is_empty(), "open already, it is not opened again");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::Haptic], "open already, it is not opened again");
         let mut first = App::new(Screen::Decrypt, W, H, PPD);
         assert_eq!(first.arrive(), vec![Effect::OpenData], "a recovery that starts on the page opens it as well");
     }

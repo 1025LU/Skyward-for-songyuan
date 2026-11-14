@@ -107,7 +107,7 @@ mod tests {
         app.state.wlan = Some(Wlan::default());
         app.refresh();
         assert!(entry(&mut app));
-        assert!(app.act(Action::Open(Screen::Wlan), 0).is_empty(), "a WLAN that is off is not scanned");
+        assert_eq!(app.act(Action::Open(Screen::Wlan), 0), vec![Effect::Haptic], "a WLAN that is off is not scanned");
         assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Wlan)), vec![Effect::Wlan(true)]);
         assert_eq!(app.state.wlan.as_ref().unwrap().power, Power::Starting, "the switch moves at once");
         let nearby = vec![network("Skyward", -34, Security::Psk), network("Skyward-Open", -72, Security::Open), network("Skyward-WEP", -60, Security::Wep)];

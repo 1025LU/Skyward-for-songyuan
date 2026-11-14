@@ -53,7 +53,7 @@ mod tests {
     fn home_opens_the_mount_page() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Mount)), vec![Effect::ReadMounts], "the page shows the partitions as they are now");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Mount)), vec![Effect::Haptic, Effect::ReadMounts], "the page shows the partitions as they are now");
         assert_eq!(app.screen(), Screen::Mount);
     }
 

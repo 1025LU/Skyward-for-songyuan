@@ -110,7 +110,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);
         app.set_update(Standing::Waiting);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "the page reads where the update stands");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::Haptic, Effect::ReadUpdate], "the page reads where the update stands");
         assert_eq!(app.screen(), Screen::Update);
         assert_eq!(swipe(&mut app, &f, &i, Confirm::Merge), vec![Effect::Merge]);
         assert_eq!(app.state.update, Standing::Merging(0.0), "the page turns to the merge at once");
@@ -131,7 +131,7 @@ mod tests {
         let (f, mut i) = (fonts(), info());
         i.snapshot = SnapshotState::Snapshotted;
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::Haptic, Effect::ReadUpdate]);
         assert_eq!(app.screen(), Screen::Update);
     }
 
@@ -139,7 +139,7 @@ mod tests {
     fn the_slot_page_switches_to_the_slot_picked() {
         let (f, i) = (fonts(), DeviceInfo { slot: Some(Slot::B), ..info() });
         let mut app = App::new(Screen::Reboot, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Slot)), vec![Effect::ReadSlots], "read as the page opens");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Slot)), vec![Effect::Haptic, Effect::ReadSlots], "read as the page opens");
         let held = BootSlots { active: Slot::B, bootable: [false, true], successful: [true, true] };
         app.set_boot_slots(Ok(held));
         assert!(swipe(&mut app, &f, &i, Confirm::Slot).is_empty());
@@ -178,7 +178,7 @@ mod tests {
     fn systems_page(f: &Fonts, i: &DeviceInfo, systems: Overview) -> App {
         let mut app = App::new(Screen::Home, W, H, PPD);
         app.state.dual_boot = true;
-        assert_eq!(tap(&mut app, f, i, Action::Open(Screen::Systems)), vec![Effect::ReadSystems], "read as the page opens");
+        assert_eq!(tap(&mut app, f, i, Action::Open(Screen::Systems)), vec![Effect::Haptic, Effect::ReadSystems], "read as the page opens");
         app.set_systems(Ok(systems));
         app
     }
@@ -318,7 +318,7 @@ mod tests {
         app.key(Key::Back, 1000);
         assert_eq!(app.screen(), Screen::Installing, "the root being written keeps the page");
         app.install(Event::Finished(Outcome::SystemInstalled { name: "Ubuntu Touch".into() }), 1000);
-        assert_eq!(tap_at(&mut app, &f, &i, Action::Open(Screen::Systems), 2000), vec![Effect::ReadSystems]);
+        assert_eq!(tap_at(&mut app, &f, &i, Action::Open(Screen::Systems), 2000), vec![Effect::Haptic, Effect::ReadSystems]);
         assert_eq!(app.screen(), Screen::Systems);
     }
 

@@ -799,7 +799,7 @@ mod tests {
         app.set_boot_slots(Ok(slots(Slot::B)));
         assert!(app.frame(&f, &i).hits.iter().all(|h| h.action != Action::Open(Screen::Slot)), "the slot it runs from starts next");
         app.set_boot_slots(Ok(slots(Slot::A)));
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Slot)), vec![Effect::ReadSlots]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Slot)), vec![Effect::Haptic, Effect::ReadSlots]);
         assert_eq!(app.screen(), Screen::Slot);
         assert_eq!(fmt::next_boot(Lang::Hans, Slot::A, Slot::B), ("重启后从 A 槽位启动".into(), "当前运行的是 B 槽位".into()));
     }

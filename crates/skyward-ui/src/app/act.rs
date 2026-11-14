@@ -19,7 +19,13 @@ impl App {
                 } else {
                     self.open(s);
                 }
-                return self.arrive_at(s);
+                let mut fx = self.arrive_at(s);
+                // Going in and out of a page taps the motor, as the system
+                // does; what the page does of its own may tap it too.
+                if self.state.vibrate {
+                    fx.insert(0, Effect::Haptic);
+                }
+                return fx;
             }
             Action::OpenData => return self.open_data(),
             Action::Skip => {
@@ -32,7 +38,14 @@ impl App {
                 self.settle_page();
                 self.refresh();
             }
-            Action::Back | Action::CloseSearch => return self.back(now),
+            Action::Back | Action::CloseSearch => {
+                let going = self.stack.len() > 1;
+                let mut fx = self.back(now);
+                if going && self.state.vibrate {
+                    fx.insert(0, Effect::Haptic);
+                }
+                return fx;
+            }
             Action::Theme { dark } => {
                 if self.state.dark != dark {
                     self.state.dark = dark;

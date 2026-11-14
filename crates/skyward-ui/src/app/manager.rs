@@ -385,13 +385,13 @@ mod tests {
     fn the_file_manager_walks_folders_and_back_up_to_the_root() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Files)), vec![Effect::ReadDir("/".into())]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Files)), vec![Effect::Haptic, Effect::ReadDir("/".into())]);
         let link = FileKind::Link { target: "/storage/self/primary".into(), folder: true };
         app.set_files("/".into(), Ok(vec![entry("sdcard", link), entry("vendor", folder(12)), entry("init.rc", FileKind::File)]), LISTED);
         assert_eq!(tap(&mut app, &f, &i, Action::OpenEntry(1)), vec![Effect::ReadDir("/vendor".into())]);
         assert_eq!(tap(&mut app, &f, &i, Action::OpenEntry(0)), vec![Effect::ReadDir("/sdcard".into())], "a link to a folder opens like one");
         app.set_files("/vendor".into(), Ok(vec![entry("etc", folder(3))]), LISTED);
-        assert_eq!(app.key(Key::Back, 0), vec![Effect::ReadDir("/".into())], "back climbs a folder");
+        assert_eq!(app.key(Key::Back, 0), vec![Effect::Haptic, Effect::ReadDir("/".into())], "back climbs a folder");
         assert_eq!(app.screen(), Screen::Files);
         app.set_files("/".into(), Ok(vec![entry("vmlinux", FileKind::File), entry("init.rc", FileKind::File)]), LISTED);
         assert_eq!(tap(&mut app, &f, &i, Action::OpenEntry(1)), vec![Effect::OpenText("/init.rc".into())], "a text file opens to edit");
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(app.state.file.as_ref().map(|e| e.name.as_str()), Some("vmlinux"));
         app.key(Key::Back, 0);
         assert_eq!(app.state.file, None);
-        assert!(app.key(Key::Back, 0).is_empty(), "at the root, back leaves");
+        assert_eq!(app.key(Key::Back, 0), vec![Effect::Haptic], "at the root, back leaves");
         assert_eq!(app.screen(), Screen::Advanced);
     }
 
@@ -410,12 +410,12 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Install, &f, &i);
         // Closed, the storage leads to the decrypt page, which comes back.
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::OpenData]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::Haptic, Effect::OpenData]);
         app.data_waiting(None);
         tap(&mut app, &f, &i, Action::Skip);
         assert_eq!(app.screen(), Screen::Install);
         let storage = Screen::Choose(Place::Storage);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(storage)), vec![Effect::ReadPlace(Place::Storage, String::new())]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(storage)), vec![Effect::Haptic, Effect::ReadPlace(Place::Storage, String::new())]);
         let listed = vec![
             entry(".thumbnails", folder(9)),
             entry("Download", folder(3)),
@@ -438,9 +438,9 @@ mod tests {
         app.install(Event::Finished(Outcome::Refused(Refusal::Unknown)), 0);
         tap_at(&mut app, &f, &i, Action::Back, 1000);
         assert_eq!((app.screen(), &app.state.install), (storage, &Install::Idle), "back to choose another");
-        assert_eq!(app.key(Key::Back, 1000), vec![Effect::ReadPlace(Place::Storage, String::new())], "back climbs to the top");
+        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Haptic, Effect::ReadPlace(Place::Storage, String::new())], "back climbs to the top");
         app.set_place(Place::Storage, String::new(), Ok(Vec::new()), LISTED);
-        assert!(app.key(Key::Back, 1000).is_empty());
+        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Haptic]);
         assert_eq!(app.screen(), Screen::Install, "from the top, back leaves");
     }
 
@@ -449,7 +449,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Install, &f, &i);
         let page = Screen::Choose(Place::UsbDrive);
-        assert!(tap(&mut app, &f, &i, Action::Open(page)).is_empty(), "with no drive, nothing to read");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(page)), vec![Effect::Haptic], "with no drive, nothing to read");
         assert_eq!(app.screen(), page);
         assert!(app.frame(&f, &i).rows.is_none(), "the page waits for one");
         assert_eq!(app.set_usb_drive(Some(UsbDrive::Shown)), vec![Effect::ReadPlace(Place::UsbDrive, String::new())], "read once shown");
@@ -464,11 +464,11 @@ mod tests {
         assert!(app.set_usb_drive(None).is_empty());
         assert_eq!(app.state.drive.path, "", "a drive pulled out leaves nothing of its folders");
         assert!(app.frame(&f, &i).rows.is_none(), "the page waits for another");
-        assert!(app.key(Key::Back, 1000).is_empty());
+        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Haptic]);
         assert_eq!(app.screen(), Screen::Install);
         let unreadable = Some(UsbDrive::Unreadable("sdg holds no filesystem the kernel reads".into()));
         assert!(app.set_usb_drive(unreadable).is_empty(), "another page reads nothing");
-        assert!(tap_at(&mut app, &f, &i, Action::Open(page), 1000).is_empty(), "nothing on the drive can be read");
+        assert_eq!(tap_at(&mut app, &f, &i, Action::Open(page), 1000), vec![Effect::Haptic], "nothing on the drive can be read");
     }
 
     #[test]
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(app.state.clip, None, "the entry is put down once the copy starts");
         assert_eq!(app.screen(), Screen::FileJob);
         app.file_progress((50, 100), (0, 1));
-        assert_eq!(app.key(Key::Back, 0), Vec::new());
+        assert_eq!(app.key(Key::Back, 0), vec![Effect::Haptic]);
         assert_eq!(app.screen(), Screen::FileJob, "the page stays while the copy runs");
         app.file_job_ended(JobEnd::Done, 0);
         assert_eq!(app.screen(), Screen::Files);
@@ -584,7 +584,7 @@ mod tests {
         let mut app = in_sdcard(&f, &i);
         tap(&mut app, &f, &i, Action::OpenEntry(1));
         app.install(Event::Image { kind: ImageKind::Dtbo, size: 1 << 20, partitions: vec!["dtbo"] }, 0);
-        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Cancel]);
+        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Haptic, Effect::Cancel]);
         assert_eq!(app.screen(), Screen::Files);
         assert!(tap_at(&mut app, &f, &i, Action::OpenEntry(1), 2000).is_empty());
         assert_eq!(toast(&app), Some("上一次安装尚未结束，请稍后再试"));
@@ -684,7 +684,7 @@ mod tests {
         assert_eq!(tap_at(&mut app, &f, &i, Action::OpenEntry(36), 2000), vec![Effect::ReadDir("/dir036".into())]);
         app.set_files("/dir036".into(), Ok(vec![entry("a", FileKind::File)]), LISTED);
         assert_eq!(app.top().1, 0.0, "a folder opened starts from its top");
-        assert_eq!(app.key(Key::Back, 3000), vec![Effect::ReadDir("/".into())]);
+        assert_eq!(app.key(Key::Back, 3000), vec![Effect::Haptic, Effect::ReadDir("/".into())]);
         app.set_files("/".into(), Ok(folders), LISTED);
         assert_eq!(app.top().1, 9000.0, "back up, the folder is where it was left");
     }
@@ -709,7 +709,7 @@ mod tests {
         app.compose(&mut c, &f, &i, "12:00", 3008);
         assert_eq!((app.title.level(3008), app.bar.level(3008)), (0.0, 0.0), "a folder opened at its top has only its large title");
         app.tick(4008);
-        assert_eq!(app.key(Key::Back, 4100), vec![Effect::ReadDir("/".into())]);
+        assert_eq!(app.key(Key::Back, 4100), vec![Effect::Haptic, Effect::ReadDir("/".into())]);
         app.set_files("/".into(), Ok(folders), LISTED);
         app.tick(4108);
         app.compose(&mut c, &f, &i, "12:00", 4108);
@@ -761,7 +761,7 @@ mod tests {
         assert_eq!(press(&mut app, Key::Power, 5000), vec![Effect::ReadDir("/dir040".into())]);
         app.set_files("/dir040".into(), Ok(vec![entry("a", FileKind::File)]), LISTED);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::OpenEntry(0))), "a folder opened lights its first entry");
-        assert_eq!(app.key(Key::Back, 6000), vec![Effect::ReadDir("/".into())]);
+        assert_eq!(app.key(Key::Back, 6000), vec![Effect::Haptic, Effect::ReadDir("/".into())]);
         app.set_files("/".into(), Ok(folders), LISTED);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::OpenEntry(40))), "back up, the folder left is lit");
     }

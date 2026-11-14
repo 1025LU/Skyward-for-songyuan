@@ -226,7 +226,7 @@ mod tests {
     fn backups_found_are_listed_newest_first_and_those_unread_last() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: false }]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::Haptic, Effect::FindBackups { storage: false, usb: false }]);
         let unread = BackupEntry { place: Place::Storage, name: "20261021-150000".into(), held: Err("read backup.toml: not found".into()) };
         let (old, new) = (found(Place::UsbDrive, 1_792_000_000, [true; 4]), found(Place::Storage, 1_792_348_260, [true; 4]));
         app.set_backups(vec![unread.clone(), old.clone(), new.clone()]);
@@ -258,7 +258,7 @@ mod tests {
             tap(&mut app, &f, &i, Action::RestorePart(k));
         }
         assert!(swipe(&mut app, &f, &i, Confirm::Restore).is_empty(), "nothing ticked, nothing restored");
-        assert_eq!(app.key(Key::Back, 0), vec![Effect::FindBackups { storage: false, usb: false }], "back on the list, it is looked for again");
+        assert_eq!(app.key(Key::Back, 0), vec![Effect::Haptic, Effect::FindBackups { storage: false, usb: false }], "back on the list, it is looked for again");
         assert_eq!((app.screen(), app.state.restore.clone()), (Screen::Restore, None));
     }
 
@@ -313,7 +313,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
         app.set_usb_drive(Some(UsbDrive::Shown));
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: true }]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::Haptic, Effect::FindBackups { storage: false, usb: true }]);
         app.set_backups(vec![found(Place::UsbDrive, 1_792_348_260, [true; 4])]);
         tap(&mut app, &f, &i, Action::OpenBackup(0));
         assert_eq!(app.set_usb_drive(None), vec![Effect::FindBackups { storage: false, usb: false }]);

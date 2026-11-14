@@ -126,7 +126,7 @@ mod tests {
         app.state.wlan = Some(connected("Skyward"));
         app.state.recovery_partitions = true;
         app.refresh();
-        assert!(tap(&mut app, &f, &i, Action::Open(Screen::SkywardUpdate)).is_empty(), "opening it asks nothing");
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::SkywardUpdate)), vec![Effect::Haptic], "opening it asks nothing");
         assert_eq!(app.screen(), Screen::SkywardUpdate);
         assert!(app.frame(&f, &i).hits.is_empty(), "the page holds no control");
     }

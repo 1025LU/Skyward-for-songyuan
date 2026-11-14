@@ -200,7 +200,7 @@ mod tests {
     fn the_filesystem_page_does_to_a_partition_what_is_chosen_and_reads_them_again_after() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);
-        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Filesystems)), vec![Effect::ReadFilesystems]);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Filesystems)), vec![Effect::Haptic, Effect::ReadFilesystems]);
         app.set_filesystems(Ok(fs_rows()));
         tap(&mut app, &f, &i, Action::OpenFilesystem(2));
         assert_eq!(app.screen(), Screen::Filesystem);
@@ -219,7 +219,7 @@ mod tests {
         app.part_ended(0, ItemEnd::Made, "");
         app.part_work_ended(Ok(()), 0);
         assert!(app.frame(&f, &i).back);
-        assert_eq!(tap_at(&mut app, &f, &i, Action::Back, 2000), vec![Effect::ReadFilesystems], "the partition may hold another now");
+        assert_eq!(tap_at(&mut app, &f, &i, Action::Back, 2000), vec![Effect::Haptic, Effect::ReadFilesystems], "the partition may hold another now");
         assert_eq!(app.screen(), Screen::Filesystem);
         assert_eq!(app.state.part_work, None);
         assert_eq!(app.state.fs_action, FsAction::Repair, "what to do to it is chosen afresh");

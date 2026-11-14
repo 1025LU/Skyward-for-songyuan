@@ -555,7 +555,7 @@ mod tests {
     fn an_install_ending_after_its_page_was_left_keeps_the_panel_dark() {
         let (f, i) = (fonts(), info());
         let mut app = sideloading(&f, &i);
-        assert_eq!(app.key(Key::Back, 0), vec![Effect::Cancel]);
+        assert_eq!(app.key(Key::Back, 0), vec![Effect::Haptic, Effect::Cancel]);
         press(&mut app, Key::Power, 10);
         app.install(Event::Finished(Outcome::Cancelled), 20);
         assert!(!app.display_on());

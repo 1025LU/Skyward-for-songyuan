@@ -433,7 +433,7 @@ mod tests {
 
         let mut app = sideloading(&f, &i);
         app.install(Event::Ready { version: None, wipe: true }, 0);
-        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Cancel], "turning it down cancels before anything is written");
+        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Haptic, Effect::Cancel], "turning it down cancels before anything is written");
         assert_eq!(app.state.install, Install::Ending);
         assert_eq!(app.screen(), Screen::Install);
     }
@@ -482,7 +482,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = sideloading(&f, &i);
         app.install(Event::Script, 0);
-        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Cancel], "turning it down cancels before it runs");
+        assert_eq!(app.key(Key::Back, 1000), vec![Effect::Haptic, Effect::Cancel], "turning it down cancels before it runs");
         assert_eq!((app.screen(), &app.state.install), (Screen::Install, &Install::Ending));
 
         let mut app = sideloading(&f, &i);
@@ -553,7 +553,7 @@ mod tests {
         app.install(Event::Progress(checking.clone()), 1000);
         assert_eq!(app.state.install, Install::Checking { size: 4096, stage: Some(checking) });
         assert!(app.frame(&f, &i).hits.is_empty(), "nothing on the page to tap while it is checked");
-        assert_eq!(app.key(Key::Back, 2000), vec![Effect::Cancel], "checking only reads, so leaving stops it");
+        assert_eq!(app.key(Key::Back, 2000), vec![Effect::Haptic, Effect::Cancel], "checking only reads, so leaving stops it");
         assert_eq!((app.screen(), &app.state.install), (Screen::Install, &Install::Ending));
         app.install(Event::Finished(Outcome::Cancelled), 2000);
         assert_eq!(app.state.install, Install::Idle);
@@ -606,7 +606,7 @@ mod tests {
         app.asked_locked(0, 0);
         assert_eq!(app.state.install, Install::Locked(0));
         assert!(app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Open(Screen::Decrypt)));
-        assert_eq!(app.key(Key::Back, 5000), vec![Effect::Cancel], "leaving gives the update up");
+        assert_eq!(app.key(Key::Back, 5000), vec![Effect::Haptic, Effect::Cancel], "leaving gives the update up");
         app.install(Event::Finished(Outcome::Cancelled), 5000);
         assert_eq!(app.state.install, Install::Idle);
     }
@@ -627,7 +627,7 @@ mod tests {
         app.rescue_wiped(Ok(()), 6000);
         assert_eq!((app.state.install.clone(), app.state.data.clone()), (Install::Wiped(Ok(())), Data::Erased));
         app.frame(&f, &i);
-        assert_eq!(app.key(Key::Back, 12000), vec![Effect::Cancel], "leaving ends rescue");
+        assert_eq!(app.key(Key::Back, 12000), vec![Effect::Haptic, Effect::Cancel], "leaving ends rescue");
         assert_eq!(app.state.install, Install::Ending);
     }
 }
