@@ -121,7 +121,15 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
             FsAction::Repair => (["滑动以修复", "滑動以修復", "Slide to repair"], true),
             FsAction::Remake(_) => (["滑动以更换", "滑動以更換", "Slide to change"], true),
         },
-        Confirm::Reboot => (["滑动以重启", "滑動以重新啟動", "Slide to reboot"], false),
+        Confirm::Reboot => match s.reboot {
+            // In the order REBOOT_TARGETS lists them: system, recovery,
+            // bootloader, EDL, power off.
+            0 => (["滑动以重启到系统", "滑動以重新啟動到系統", "Slide to reboot to system"], false),
+            1 => (["滑动以重启到恢复模式", "滑動以重新啟動到復原模式", "Slide to reboot to recovery"], false),
+            2 => (["滑动以重启到 Bootloader", "滑動以重新啟動到 Bootloader", "Slide to reboot to bootloader"], false),
+            3 => (["滑动以进入 EDL", "滑動以進入 EDL", "Slide to enter EDL"], true),
+            _ => (["滑动以关机", "滑動以關機", "Slide to power off"], false),
+        },
         Confirm::Wipe => (["滑动以清除", "滑動以清除", "Slide to wipe"], true),
         Confirm::Flash => (["滑动以刷入", "滑動以刷入", "Slide to flash"], true),
         Confirm::Backup => (["滑动以备份", "滑動以備份", "Slide to back up"], false),

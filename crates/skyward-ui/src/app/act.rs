@@ -93,6 +93,9 @@ impl App {
             }
             Action::RebootTarget(i) => {
                 self.state.reboot = i;
+                // The knob springs back when the target changes, so the
+                // swipe never confirms a target the finger was not over.
+                self.state.confirm = 0.0;
                 self.refresh();
             }
             // Everything takes in every part, so choosing it leaves the
