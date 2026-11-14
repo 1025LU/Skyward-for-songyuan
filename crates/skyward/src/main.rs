@@ -965,6 +965,14 @@ fn recovery() -> Result<()> {
         if !request.unknown.is_empty() {
             skyward_sys::kmsg(&format!("misc arguments this recovery does not know: {:?}", request.unknown))?;
         }
+        // The recovery's own userspace fastboot is left to the
+        // bootloader: fastbootd waits for a boot control HAL the phone's
+        // own init does not start, and without it the port never comes up.
+        // The bootloader's own fastboot serves whole partitions just the
+        // same.
+        if request.work == bcb::Work::Fastboot {
+            return skyward_sys::power(Power::Bootloader);
+        }
         if request.work == bcb::Work::Exit {
             return skyward_sys::power(if request.shutdown_after { Power::Off } else { Power::System });
         }

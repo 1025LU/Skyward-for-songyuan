@@ -14,7 +14,7 @@ pub enum Target {
     PowerOff,
 }
 
-pub const TARGETS: [Target; 6] = [Target::System, Target::Recovery, Target::Fastboot, Target::Bootloader, Target::Edl, Target::PowerOff];
+pub const TARGETS: [Target; 5] = [Target::System, Target::Recovery, Target::Bootloader, Target::Edl, Target::PowerOff];
 
 /// Where the fastboot page goes, in the order it lists them: the volume
 /// keys move between them and the power key takes one.
@@ -117,7 +117,7 @@ mod tests {
     fn swiping_the_knob_reboots_to_the_chosen_target() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Reboot, W, H, PPD);
-        tap(&mut app, &f, &i, Action::RebootTarget(3));
+        tap(&mut app, &f, &i, Action::RebootTarget(2));
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::Reboot)).unwrap().rect;
         let y = track.centre().1;
         app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 0);
@@ -137,16 +137,6 @@ mod tests {
         app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 0);
         app.touch(Touch::Move(track.x + track.w / 2.0, y), &f, 0);
         assert!(app.touch(Touch::Up, &f, 0).is_empty());
-    }
-
-    #[test]
-    fn fastboot_is_chosen_and_restarted_to_like_any_target() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Reboot, W, H, PPD);
-        let fastboot = TARGETS.iter().position(|t| *t == Target::Fastboot).unwrap();
-        tap(&mut app, &f, &i, Action::RebootTarget(fastboot));
-        assert_eq!(app.state.reboot, fastboot);
-        assert_eq!(swipe(&mut app, &f, &i, Confirm::Reboot), vec![Effect::Reboot(Target::Fastboot)]);
     }
 
     #[test]

@@ -192,7 +192,11 @@ fn power(target: Target) -> Result<()> {
     skyward_sys::power(match target {
         Target::System => Power::System,
         Target::Recovery => Power::Recovery,
-        Target::Fastboot => Power::Fastboot,
+        // The recovery's own fastbootd is left out: the boot control HAL
+        // it waits for is not started by the phone's own init, and without
+        // it the port never comes up. The bootloader's own fastboot serves
+        // whole partitions just the same.
+        Target::Fastboot => Power::Bootloader,
         Target::Bootloader => Power::Bootloader,
         Target::Edl => Power::Edl,
         Target::PowerOff => Power::Off,
@@ -1458,6 +1462,39 @@ impl<'a> Pages<'a> {
             if let Err(e) = mount_fastboot_ffs() {
                 skyward_sys::kmsg(&format!("fastboot's function filesystem is not mounted: {e:#}"))?;
             }
+            // The boot control HAL is one of the phone's own programs: built
+            // against two libraries of the installed system that the
+            // recovery's own library folder leaves out, it ends as soon as
+            // it starts without them, and fastbootd then asks the service
+            // directory for an interface that never answers. They are taken
+            // from the system partition, which is mounted only for as long
+            // as the copy takes and taken away again here: fastbootd
+            // rewrites super, which it cannot do while the slot's
+            // partitions are mounted.
+            match skyward_vab::current_slot() {
+                Ok(Some(slot)) => match skyward_vab::mount_one(slot, "system") {
+                    Ok(_) => {
+                        match secure::provide_system_libraries() {
+                            Ok(0) => {}
+                            Ok(copied) => skyward_sys::kmsg(&format!("{copied} libraries of the installed system are in place for its services"))?,
+                            Err(e) => skyward_sys::kmsg(&format!("the installed system's libraries are not in place: {e:#}"))?,
+                        }
+                        if let Err(e) = skyward_vab::unmount_one(slot, "system") {
+                            skyward_sys::kmsg(&format!("the system partition is left mounted: {e:#}"))?;
+                        }
+                    }
+                    Err(e) => skyward_sys::kmsg(&format!("the system partition is not mounted for the boot control service: {e:#}"))?,
+                },
+                Ok(None) => skyward_sys::kmsg("the phone is not an A/B one, so no system partition is mounted for the boot control service")?,
+                Err(e) => skyward_sys::kmsg(&format!("the slot the phone runs from is not known: {e:#}"))?,
+            }
+            // The directory turns away an interface the running system does
+            // not describe, and the recovery's own descriptions are read
+            // once, when it starts.
+            if let Err(e) = secure::publish_descriptions(&[BOOT_CONTROL.to_string()]) {
+                skyward_sys::kmsg(&format!("the service directory is not told of {BOOT_CONTROL}: {e:#}"))?;
+            }
+            let libraries = secure::libraries().ok().flatten();
             // fastbootd asks the service directory for the boot control HAL
             // before it opens its port and asks again every second until it
             // has it, but the recovery's own services wait for the phone's
@@ -1479,7 +1516,7 @@ impl<'a> Pages<'a> {
                 // below and is given up on after five seconds, so a HAL that
                 // is still coming up by then leaves fastbootd asking a
                 // directory that has nothing to answer with.
-                match crate::services::start(&boot, None, true) {
+                match crate::services::start(&boot, libraries.as_deref(), true) {
                     Ok(_) => {
                         let up = crate::services::registered(BOOT_CONTROL);
                         skyward_sys::kmsg(&format!(
@@ -1504,6 +1541,13 @@ impl<'a> Pages<'a> {
             if let Err(e) = skyward_sys::usb::switch("fastboot", USB_TIMEOUT) {
                 skyward_sys::kmsg(&format!("fastbootd has not taken the port: {e:#}"))?;
                 app.report(&format!("{e:#}"), monotonic_ms());
+                // A port asked for fastboot and taken by no one answers
+                // nothing on either side, and the computer loses the phone:
+                // given back to adb, the page can still be worked and the
+                // phone reached.
+                if let Err(r) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT) {
+                    skyward_sys::kmsg(&format!("the port is not given back to adb: {r:#}"))?;
+                }
             }
             let (running, link, state, asked, ready, ffs, holds, boot, waiting) = fastboot_status()?;
             app.set_fastboot(running, link, state, asked, ready, ffs, holds, boot, waiting);
@@ -3188,8 +3232,21 @@ impl Pages<'_> {
         // again on the next turn rather than ending the recovery here.
         self.fastboot = false;
         self.app.enter_recovery();
-        if let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT) {
-            skyward_sys::kmsg(&format!("the port is still with fastboot: {e:#}"))?;
+        // fastbootd leaves the port a moment after it is told to, and the
+        // functions it holds are not the ones wanted back, so the port is
+        // given up for a while first: asked a second time when the first
+        // asking runs out, the port is usually free by then.
+        let mut asked = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT);
+        if asked.is_err() {
+            skyward_sys::kmsg(&format!(
+                "the port is still with fastboot: {}",
+                asked.as_ref().unwrap_err()
+            ))?;
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            asked = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT);
+        }
+        if let Err(e) = asked {
+            skyward_sys::kmsg(&format!("the port is still with fastboot after two askings: {e:#}"))?;
         }
         let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
         if let Err(e) = crate::prepare(self.cfg, slot) {

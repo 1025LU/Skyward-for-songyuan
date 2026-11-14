@@ -146,11 +146,10 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
 pub const HOME_TITLE: &str = "Skyward";
 pub const SEARCH_HINT: Text = ["搜索功能与分区", "搜尋功能與分割區", "Search features and partitions"];
 
-const REBOOT_TARGETS: [(Text, Option<Text>); 6] = [
+const REBOOT_TARGETS: [(Text, Option<Text>); 5] = [
     (["系统", "系統", "System"], None),
     (["恢复模式", "復原模式", "Recovery"], None),
-    (["Fastboot"; 3], Some(["用户空间 fastbootd", "使用者空間 fastbootd", "Userspace fastbootd"])),
-    (["Bootloader"; 3], None),
+    (["Bootloader"; 3], Some(["原厂 fastboot", "原廠 fastboot", "Stock fastboot"])),
     (["EDL"; 3], Some(["高通紧急下载模式", "高通緊急下載模式", "Qualcomm emergency download"])),
     (["关机", "關機", "Power off"], None),
 ];
