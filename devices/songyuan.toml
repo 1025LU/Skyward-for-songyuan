@@ -153,6 +153,34 @@ groups = ["vendor_thales_weaver", "system", "drmrpc"]
 # user = "system"
 # groups = ["system", "drmrpc"]
 
+[wlan]
+modules = ["rfkill", "qca_cld3_peach_v2"]
+writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+libraries = ["/system/lib64", "/vendor/lib64"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+probe = "http://connect.rom.miui.com/generate_204"
+
+# The update server the stock updater of the Chinese system asks.
+[update]
+server = "https://update.miui.com/updates/miotaV3.php"
+
+# The stock build the recovery is made on: the Chinese system's OS4.0.4.0,
+# whose full update package on the phone maker's own download server holds
+# the recovery partition the recovery is built on top of.
+[stock]
+version = "OS4.0.4.0.XGNCNXM"
+package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS4.0.4.0.XGNCNXM/songyuan-ota_full-OS4.0.4.0.XGNCNXM-user-17.0-25df7572bd.zip"
+recovery = "de8fcb7522ab6fd8b366b8bd6f0f2f5150d969a4c4d5ce04c61d1f87f6a2353d"
+
+# qcom-hv-haptics (qcom,hv-haptics in its dtbo), with the click made from
+# samples at the motor's resonant frequency as on the 17 Ultra. The
+# strengths are the 17 Ultra's, which were felt on that phone's motor.
+[haptics]
+resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
+strength = { lightest = 0.25, strongest = 0.75 }
+
 [[service]]
 path = "/vendor/bin/hw/android.hardware.boot-service.qti"
 libraries = ["/system/lib64", "/vendor/lib64", "/mnt/system/system/lib64"]
