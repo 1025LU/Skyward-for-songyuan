@@ -1769,13 +1769,21 @@ impl<'a> Pages<'a> {
         // The WLAN starts off. Without the bundle of the vendor interface's
         // libraries the supplicant does not start, and the WLAN page says why.
         if let Some(w) = &cfg.wlan {
-            self.app.state.wlan = Some(Wlan::default());
+            // The WLAN starts off, unless the settings keep it on: without
+            // the bundle of the vendor interface's libraries the supplicant
+            // does not start, and the WLAN page says why.
+            let auto = self.app.state.wlan_auto;
+            let starting = Wlan { power: if auto { WlanPower::Starting } else { WlanPower::Off }, ..Wlan::default() };
+            self.app.state.wlan = Some(starting);
             let modules = cfg.modules.sources.iter().map(|s| skyward_modules::source_dir(s)).collect::<Result<Vec<_>>>()?;
             let libraries = secure::libraries().unwrap_or_else(|e| {
                 let _ = skyward_sys::kmsg(&format!("the vendor interface's libraries are not open: {e:#}"));
                 None
             });
             self.wlan = Some(wlan::Worker::start(w.clone(), modules, libraries, self.servers.clone())?);
+            if auto && let Some(worker) = &self.wlan {
+                worker.send(wlan::Command::On);
+            }
         }
         self.scanned_at = Instant::now();
         self.app.state.update_server = cfg.update.is_some();

@@ -52,6 +52,8 @@ pub struct Settings {
     /// The Wi-Fi password is kept on the data partition, which only opens
     /// once it is unlocked, rather than on the persist partition.
     pub wlan_kept: bool,
+    /// The WLAN is turned on as the recovery starts.
+    pub wlan_auto: bool,
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
@@ -130,6 +132,7 @@ impl Settings {
             vibration: state.vibration,
             file_transfer: state.file_transfer,
             wlan_kept: state.wlan_kept,
+            wlan_auto: state.wlan_auto,
             install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery },
             backup: Backup {
                 parts: names(&state.backup, &PARTS),
@@ -189,6 +192,7 @@ impl Settings {
         }
         state.file_transfer = self.file_transfer;
         state.wlan_kept = self.wlan_kept;
+        state.wlan_auto = self.wlan_auto;
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
         state.backup = picked(&self.backup.parts, &PARTS);

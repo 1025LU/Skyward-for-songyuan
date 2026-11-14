@@ -71,6 +71,7 @@ impl App {
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
                     Switch::ShowPassword => &mut self.state.show_password,
                     Switch::WlanKept => &mut self.state.wlan_kept,
+                    Switch::WlanAuto => &mut self.state.wlan_auto,
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
                 };
                 *on = !*on;

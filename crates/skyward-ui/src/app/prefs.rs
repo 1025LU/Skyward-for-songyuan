@@ -32,6 +32,8 @@ pub enum Switch {
     /// Keep the Wi-Fi password on the data partition, which only opens once
     /// it is unlocked, rather than on the persist partition.
     WlanKept,
+    /// Turn the WLAN on as the recovery starts.
+    WlanAuto,
 }
 
 /// How long the screen stays on with nothing touched, in milliseconds, in

@@ -28,6 +28,8 @@ pub struct State {
     /// The Wi-Fi password is kept on the data partition, which only opens
     /// once it is unlocked, rather than on the persist partition.
     pub wlan_kept: bool,
+    /// The WLAN is turned on as the recovery starts.
+    pub wlan_auto: bool,
     pub reboot: usize,
     /// What the wipe page has chosen, by place in [`WIPES`].
     pub wipe: [bool; WIPES.len()],
@@ -200,6 +202,7 @@ impl Default for State {
             vibration: SLIDER_START,
             file_transfer: true,
             wlan_kept: false,
+            wlan_auto: false,
             reboot: 0,
             wipe: [false; WIPES.len()],
             cache_partition: false,
