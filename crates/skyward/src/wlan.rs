@@ -728,7 +728,21 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
             thread::sleep(Duration::from_millis(100));
         }
     }
-    iface::set_up(&cfg.interface, true)
+    // The driver makes its interface before its own start is done, and an
+    // interface still starting answers the link with `busy`: asked again
+    // for a while, it comes up.
+    let until = Instant::now() + INTERFACE_WAIT;
+    loop {
+        match iface::set_up(&cfg.interface, true) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if Instant::now() >= until {
+                    return Err(e);
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
 }
 
 /// Put a file the driver asks for where the firmware loader looks.
