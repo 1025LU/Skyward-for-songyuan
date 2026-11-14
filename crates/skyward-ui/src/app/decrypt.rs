@@ -67,6 +67,18 @@ impl App {
         };
         self.state.code.clear();
         self.refresh();
+        // Every user's own files open: nothing is left to ask, so the page
+        // steps aside for the home page rather than saying so and waiting to
+        // be dismissed.
+        if waiting.is_none() && self.screen() == Screen::Decrypt {
+            self.leave(true);
+            if self.stack.len() > 1 {
+                self.stack.pop();
+            } else {
+                *self.top_mut() = (Screen::Home, 0.0, Focus::Unset);
+            }
+            self.refresh();
+        }
     }
 
     /// The data partition did not open, and why.

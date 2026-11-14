@@ -409,11 +409,11 @@ mod tests {
     fn a_file_in_internal_storage_is_chosen_once_the_storage_is_open() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Install, &f, &i);
-        // Closed, the storage leads to the decrypt page, which comes back.
+        // Closed, the storage leads to the decrypt page, which steps aside
+        // on its own once the files are open.
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::Haptic, Effect::OpenData]);
         app.data_waiting(None);
-        tap(&mut app, &f, &i, Action::Skip);
-        assert_eq!(app.screen(), Screen::Install);
+        assert_eq!(app.screen(), Screen::Install, "the page steps aside once the files are open");
         let storage = Screen::Choose(Place::Storage);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(storage)), vec![Effect::Haptic, Effect::ReadPlace(Place::Storage, String::new())]);
         let listed = vec![

@@ -914,14 +914,14 @@ fn main() -> Result<()> {
         }),
         ("85-decrypt-light-opening", Screen::Decrypt, false, &|app| app.state.data = Data::Opening),
         ("86-decrypt-light-digits", Screen::Decrypt, false, &|app| {
-            app.data_waiting(Some((0, Keys::Digits)), Vec::new());
+            app.data_waiting(Some((0, Keys::Digits)));
             app.state.code = "123".into();
         }),
-        ("87-decrypt-dark-letters", Screen::Decrypt, true, &|app| app.data_waiting(Some((10, Keys::Letters)), Vec::new())),
+        ("87-decrypt-dark-letters", Screen::Decrypt, true, &|app| app.data_waiting(Some((10, Keys::Letters)))),
         ("88-decrypt-light-checking", Screen::Decrypt, false, &|app| {
             app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: true };
         }),
-        ("89-decrypt-light-open", Screen::Decrypt, false, &|app| app.data_waiting(None, Vec::new())),
+        ("89-decrypt-light-open", Screen::Decrypt, false, &|app| app.data_waiting(None)),
         ("90-decrypt-dark-failed", Screen::Decrypt, true, &|app| {
             app.data_failed("android.hardware.security.keymint.IKeyMintDevice/default is not running".into())
         }),

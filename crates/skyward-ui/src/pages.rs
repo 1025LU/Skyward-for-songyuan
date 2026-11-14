@@ -705,15 +705,11 @@ pub fn specs(cx: &Ctx) -> Frame {
 pub fn decrypt(cx: &Ctx) -> Frame {
     let (c, l) = (page(cx), cx.state.lang);
     match &cx.state.data {
-        Data::Locked { user, keys, checking } => code(cx, c, *user, *keys, *checking),
-        Data::Closed | Data::Opening => data_status(
-            cx,
-            c,
-            Icon::Lock,
-            l.pick(["解密 data 分区", "解密 data 分割區", "Decrypt the data partition"]),
-            Some(l.pick(["正在读取锁屏方式", "正在讀取螢幕鎖定方式", "Reading the screen lock"])),
-            None,
-        ),
+        Data::Locked { user, keys, checking } => code(cx, c, *user, *keys, *checking, false),
+        // The keys stand as soon as the screen lights, so what is asked of the
+        // user is there to see; until the recovery knows which screen lock to
+        // read they are drawn faded and take no touch.
+        Data::Closed | Data::Opening => code(cx, c, 0, Keys::Digits, false, true),
         Data::Open => data_status(
             cx,
             c,
@@ -769,7 +765,7 @@ const DECRYPT_NEEDED: Text = ["需先完成「解密」", "需先完成「解密
 
 /// A user's own files wait on their screen lock: the control it is
 /// answered with, which takes nothing while what was entered is checked.
-fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame {
+fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool, waiting: bool) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let m = &t.m;
     let x = m.w as f32 / 2.0;
@@ -780,15 +776,23 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
         (false, 0) => l.pick(["输入锁屏密码", "輸入螢幕鎖定密碼", "Enter the screen lock"]).to_string(),
         (false, user) => tr!(l, "输入用户 {user} 的锁屏密码", "輸入使用者 {user} 的螢幕鎖定密碼", "Enter user {user}'s screen lock"),
     };
-    let note = l.pick(if checking { ["正在验证", "正在驗證", "Checking"] } else { ["解密后可查看本机文件", "解密後可查看本機檔案", "Decrypt to see the phone's files"] });
+    let note = l.pick(if waiting {
+        ["正在读取锁屏方式", "正在讀取螢幕鎖定方式", "Reading the screen lock"]
+    } else if checking {
+        ["正在验证", "正在驗證", "Checking"]
+    } else {
+        ["解密后可查看本机文件", "解密後可查看本機檔案", "Decrypt to see the phone's files"]
+    });
+    // Neither a screen lock not yet known nor a code being checked takes keys.
+    let still = checking || waiting;
     c.text_center(&f.heading, &title, x, m.dp(130.0), m.dp(24.0), t.pal.text);
     c.text_center(&f.body, note, x, m.dp(166.0), m.sub_px, t.pal.subtitle);
     let mut pattern = None;
     let bottom = match keys {
         Keys::Letters => {
             let top = m.h as f32 - widgets::keyboard_height(t);
-            let caps = widgets::keyboard(&mut c, t, f, l, top, s.layer, s.key_held(), l.pick(DECRYPT));
-            if !checking {
+            let caps = widgets::keyboard(&mut c, t, f, l, top, s.layer, s.key_held(), l.pick(DECRYPT), still);
+            if !still {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
             }
             top
@@ -797,7 +801,7 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
             let span = m.dp(300.0);
             let cy = m.dp(300.0) + span / 2.0;
             widgets::pattern_lock(&mut c, t, x, cy, span, &s.pattern);
-            if !checking {
+            if !still {
                 out.push(Hit { rect: Rect::new(x - span, cy - span, span * 2.0, span * 2.0), action: Action::Pattern });
                 pattern = Some((x, cy, span));
             }
@@ -805,8 +809,8 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
         }
         Keys::Digits => {
             let top = m.h as f32 - widgets::keypad_height(t);
-            let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held());
-            if !checking {
+            let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held(), still);
+            if !still {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
             }
             top
@@ -1774,7 +1778,7 @@ pub fn wipe(cx: &Ctx) -> Frame {
 /// is, and its keys as touch targets.
 fn keyboard_hits(c: &mut Canvas, t: &Theme, f: &Fonts, s: &State, enter: &str, out: &mut Vec<Hit>) -> f32 {
     let top = t.m.h as f32 - widgets::keyboard_height(t);
-    let keys = widgets::keyboard(c, t, f, s.lang, top, s.layer, s.key_held(), enter);
+    let keys = widgets::keyboard(c, t, f, s.lang, top, s.layer, s.key_held(), enter, false);
     out.extend(keys.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
     top
 }
