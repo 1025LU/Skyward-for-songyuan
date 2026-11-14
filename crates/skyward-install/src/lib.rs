@@ -15,6 +15,7 @@ pub mod ota;
 pub mod package;
 pub mod script;
 pub mod signature;
+pub mod upgrade;
 pub mod wipe;
 
 #[cfg(target_os = "android")]

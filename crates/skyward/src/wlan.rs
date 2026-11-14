@@ -11,16 +11,16 @@ use skyward_net::iface;
 use skyward_net::reach::{self, Reach};
 use skyward_net::supplicant::{self, Bss, Control, Event as Told, Security};
 use skyward_net::wlan::{self, Joined, Link, Next, Power, Stage, Traffic, Wlan};
+use skyward_sys::worker::{self, Teller};
 use std::fs;
 use std::net::Ipv4Addr;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::RawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as Process, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// The first folder the firmware loader looks in that a recovery can
@@ -34,9 +34,9 @@ const PARTITIONS: &str = "/skyward/wlan";
 /// recovery service's own folder.
 const HOME: &str = "/skyward/run/supplicant";
 
-/// The file a password entered once is kept in, on the persist partition:
-/// nothing unlocks it, and a flash of the recovery leaves it alone. Its one
-/// line is two hex fields, tab apart: the network's name and its password.
+/// The file a password kept is written to, in the root of whichever
+/// partition the screen asks for: the persist one, which a recovery reads
+/// before the data one is open, or the data one, which is encrypted.
 const REMEMBERED: &str = "skyward-wifi";
 
 /// The user the supplicant takes on as it starts, who has to be able to
@@ -70,8 +70,8 @@ pub enum Command {
     Scan,
     Join { ssid: Vec<u8>, name: String, security: Security, password: String },
     Leave,
-    /// Keep the password entered from now on on the data partition, which
-    /// only opens once it is unlocked, rather than on the persist one.
+    /// Keep the passwords on the data partition rather than on the persist
+    /// one, as the screen asks, and join the one kept now that it may.
     KeepIn { data: bool },
 }
 
@@ -98,30 +98,11 @@ enum Report {
 }
 
 pub struct Worker {
-    inbox: Sender<Inbox>,
-    /// Written to wake the thread when something is in its inbox.
-    poke: Arc<OwnedFd>,
-    told: Receiver<Report>,
-    /// Readable while the screen has something to be told.
-    wake: OwnedFd,
-    thread: Option<JoinHandle<()>>,
-}
-
-fn pipe() -> Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("make a pipe for the WLAN thread");
-    }
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
-}
-
-fn signal(fd: &OwnedFd) {
-    unsafe { libc::write(fd.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
-}
-
-fn drain(fd: &OwnedFd) {
-    let mut buf = [0u8; 64];
-    while unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+    /// What the thread is asked, each of which wakes it.
+    inbox: Teller<Inbox>,
+    /// What the screen is told. The thread is waited for once it has been
+    /// asked to end.
+    worker: worker::Worker<Report>,
 }
 
 impl Worker {
@@ -130,43 +111,42 @@ impl Worker {
     /// interface's libraries, and `servers` where the DNS servers the
     /// network gives are kept for whoever looks names up.
     pub fn start(cfg: Config, modules: Vec<PathBuf>, libraries: Option<PathBuf>, servers: Servers) -> Result<Worker> {
-        let (inbox_tx, inbox) = mpsc::channel();
-        let (poked, poke) = pipe()?;
-        let (told_tx, told) = mpsc::channel();
-        let (wake, rung) = pipe()?;
-        let poke = Arc::new(poke);
-        let back = Back { inbox: inbox_tx.clone(), poke: poke.clone() };
-        let thread = thread::Builder::new()
-            .name("wlan".into())
-            .spawn(move || {
-                let tell = move |r: Report| {
-                    // The screen only stops listening once it has let the
-                    // worker go.
-                    let _ = told_tx.send(r);
-                    signal(&rung);
-                };
-                let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, left: false, tried: false, kept_in_data: false, timed: false, back, tell: Box::new(tell) };
-                s.run(&inbox, &poked);
-            })
-            .context("start the WLAN thread")?;
-        Ok(Worker { inbox: inbox_tx, poke, told, wake, thread: Some(thread) })
+        let (inbox, asked) = worker::telling().context("make the WLAN thread's inbox")?;
+        let back = inbox.clone();
+        let worker = worker::Worker::start("wlan", move |tell| {
+            let mut s = Station {
+                cfg,
+                modules,
+                libraries,
+                servers,
+                state: Wlan::default(),
+                running: None,
+                back,
+                tell,
+                left: false,
+                tried: false,
+                kept_in_data: false,
+                timed: false,
+            };
+            s.run(&asked);
+        })?;
+        Ok(Worker { inbox, worker })
     }
 
     pub fn send(&self, c: Command) {
-        let _ = self.inbox.send(Inbox::Command(c));
-        signal(&self.poke);
+        self.inbox.tell(Inbox::Command(c));
     }
 
+    /// Readable while the screen has something to be told.
     pub fn fd(&self) -> RawFd {
-        self.wake.as_raw_fd()
+        self.worker.fd()
     }
 
     /// How the WLAN stands now, and how fast data went over it in the last
     /// second, each if told since the last call.
     pub fn told(&self) -> (Option<Wlan>, Option<Traffic>) {
-        drain(&self.wake);
         let (mut wlan, mut traffic) = (None, None);
-        for report in self.told.try_iter() {
+        for report in self.worker.events() {
             match report {
                 Report::Wlan(w) => wlan = Some(w),
                 Report::Traffic(t) => traffic = Some(t),
@@ -179,19 +159,8 @@ impl Worker {
 impl Drop for Worker {
     /// The WLAN goes off with the thread.
     fn drop(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            let _ = self.inbox.send(Inbox::End);
-            signal(&self.poke);
-            thread.join().expect("the WLAN thread does not panic");
-        }
+        self.inbox.tell(Inbox::End);
     }
-}
-
-/// What a thread asking for an address answers to.
-#[derive(Clone)]
-struct Back {
-    inbox: Sender<Inbox>,
-    poke: Arc<OwnedFd>,
 }
 
 /// The supplicant running, and the address the network gave.
@@ -252,25 +221,27 @@ struct Station {
     servers: Servers,
     state: Wlan,
     running: Option<Running>,
+    /// What a thread asking for an address, or looking how far the
+    /// network reaches, answers to: the thread's own inbox.
+    back: Teller<Inbox>,
+    tell: Teller<Report>,
     /// Whether the one at the screen has left, so that the network kept is
     /// not joined behind their back.
     left: bool,
     /// Whether the network kept has been tried this run.
     tried: bool,
-    /// Whether the password is kept on the data partition rather than on the
-    /// persist one, as the screen asks.
+    /// Whether the password is kept on the data partition rather than on
+    /// the persist one, as the screen asks.
     kept_in_data: bool,
     /// Whether the clock has been set from the network this run.
     timed: bool,
-    back: Back,
-    tell: Box<dyn Fn(Report) + Send>,
 }
 
 impl Station {
-    fn run(&mut self, inbox: &Receiver<Inbox>, poked: &OwnedFd) {
+    fn run(&mut self, asked: &worker::Told<Inbox>) {
         let mut told = self.state.clone();
         loop {
-            let mut fds = vec![libc::pollfd { fd: poked.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
+            let mut fds = vec![libc::pollfd { fd: asked.fd(), events: libc::POLLIN, revents: 0 }];
             if let Some(r) = &self.running {
                 fds.push(libc::pollfd { fd: r.monitor.fd(), events: libc::POLLIN, revents: 0 });
             }
@@ -279,8 +250,7 @@ impl Station {
                 let e = std::io::Error::last_os_error();
                 assert_eq!(e.kind(), std::io::ErrorKind::Interrupted, "poll the WLAN thread's inputs: {e}");
             }
-            drain(poked);
-            for message in inbox.try_iter() {
+            for message in asked.take() {
                 match message {
                     Inbox::Command(c) => self.command(c),
                     Inbox::Address(n, answer) => self.addressed(n, answer),
@@ -292,7 +262,7 @@ impl Station {
             self.timers();
             if self.state != told {
                 told = self.state.clone();
-                (self.tell)(Report::Wlan(told.clone()));
+                self.tell.tell(Report::Wlan(told.clone()));
             }
         }
     }
@@ -336,12 +306,12 @@ impl Station {
                 self.join_kept();
             }
             Command::Leave => {
-                self.left = true;
                 self.unaddress();
-                if let Some(r) = &self.running {
-                    if let Err(e) = r.control.order("REMOVE_NETWORK all") {
-                        self.lost(e);
-                    }
+                self.left = true;
+                if let Some(r) = &self.running
+                    && let Err(e) = r.control.order("REMOVE_NETWORK all")
+                {
+                    self.lost(e);
                 }
                 self.state.joined = None;
             }
@@ -353,12 +323,12 @@ impl Station {
             return;
         }
         self.state.power = Power::Starting;
-        (self.tell)(Report::Wlan(self.state.clone()));
+        self.tell.tell(Report::Wlan(self.state.clone()));
         match self.start() {
             Ok(r) => {
-                let _ = skyward_sys::kmsg("the WLAN is up: wpa_supplicant answers on its control socket");
                 self.running = Some(r);
                 self.state.power = Power::On;
+                let _ = skyward_sys::kmsg("the WLAN is up: wpa_supplicant answers on its control socket");
                 self.tried = false;
                 self.left = false;
                 self.join_kept();
@@ -470,23 +440,10 @@ impl Station {
             found.extend(page);
         }
         self.state.networks = wlan::networks(&found);
-        let _ = skyward_sys::kmsg(&format!("the scan found {} networks", found.len()));
         r.found = found;
+        let count = r.found.len();
+        let _ = skyward_sys::kmsg(&format!("the scan found {count} networks"));
         Ok(())
-    }
-
-    /// Join the network a password was kept for, as soon as there is a
-    /// supplicant to join it with: the security was kept with the password,
-    /// so no scan has to answer first.
-    fn join_kept(&mut self) {
-        if self.running.is_none() || self.left || self.tried || self.state.joined.is_some() {
-            return;
-        }
-        let Some((ssid, password, security)) = kept(self.kept_in_data) else { return };
-        self.tried = true;
-        let name = String::from_utf8_lossy(&ssid).into_owned();
-        let _ = skyward_sys::kmsg(&format!("joining {name} with the password kept, no scan waited for"));
-        self.command(Command::Join { ssid, name, security, password });
     }
 
     fn joining(&mut self, told: &Told) {
@@ -496,10 +453,10 @@ impl Station {
             Next::Address => self.ask_address(),
             Next::Unaddress => self.unaddress(),
             Next::Forget => {
-                if let Some(r) = &self.running {
-                    if let Err(e) = r.control.order("REMOVE_NETWORK all") {
-                        self.lost(e);
-                    }
+                if let Some(r) = &self.running
+                    && let Err(e) = r.control.order("REMOVE_NETWORK all")
+                {
+                    self.lost(e);
                 }
             }
         }
@@ -516,7 +473,6 @@ impl Station {
         }
         r.asked += 1;
         let n = r.asked;
-        let _ = skyward_sys::kmsg("joined the network, asking it for an address");
         let stop = Arc::new(AtomicBool::new(false));
         r.asking = Some((n, stop.clone()));
         let mac = r.mac;
@@ -526,8 +482,7 @@ impl Station {
                 None => dhcp::obtain(&interface, mac, &stop).map(Asked::Got),
                 Some((lease, phase)) => dhcp::keep(&interface, mac, &lease, phase > 0, &stop).map(Asked::Kept),
             };
-            let _ = back.inbox.send(Inbox::Address(n, answer));
-            signal(&back.poke);
+            back.tell(Inbox::Address(n, answer));
         });
     }
 
@@ -560,15 +515,15 @@ impl Station {
             }
         };
         let same = r.lease.as_ref().is_some_and(|h| (h.lease.address, h.lease.mask, h.lease.router) == (lease.address, lease.mask, lease.router));
-        if !same {
-            if let Err(e) = iface::configure(&self.cfg.interface, lease.address, lease.mask, lease.router) {
-                let _ = skyward_sys::kmsg(&format!("{e:#}"));
-                r.retry_at = Some(Instant::now() + RETRY);
-                if let Some(j) = &mut self.state.joined {
-                    j.stage = Stage::NoAddress(format!("{e:#}"));
-                }
-                return;
+        if !same
+            && let Err(e) = iface::configure(&self.cfg.interface, lease.address, lease.mask, lease.router)
+        {
+            let _ = skyward_sys::kmsg(&format!("{e:#}"));
+            r.retry_at = Some(Instant::now() + RETRY);
+            if let Some(j) = &mut self.state.joined {
+                j.stage = Stage::NoAddress(format!("{e:#}"));
             }
+            return;
         }
         let _ = skyward_sys::kmsg(&format!(
             "{} has {} ({}) through {:?} for {} s, kept again after {} s",
@@ -602,8 +557,7 @@ impl Station {
         let n = r.probed;
         thread::spawn(move || {
             let reach = reach::probe(&page, &dns);
-            let _ = back.inbox.send(Inbox::Reach(n, reach));
-            signal(&back.poke);
+            back.tell(Inbox::Reach(n, reach));
         });
     }
 
@@ -612,33 +566,50 @@ impl Station {
             return;
         }
         let online = matches!(reach, Reach::Online);
-        let Some(Joined { stage: Stage::Connected(link), .. }) = &mut self.state.joined else { return };
-        let _ = skyward_sys::kmsg(&format!("the network on {} {reach}", self.cfg.interface));
-        link.reach = Some(reach);
-        // The clock a recovery starts with is the PMIC's count from zero,
-        // and nothing on the phone says how long ago that was; a page that
-        // answers says what the time is, and one answer is enough.
+        {
+            let Some(Joined { stage: Stage::Connected(link), .. }) = &mut self.state.joined else { return };
+            let _ = skyward_sys::kmsg(&format!("the network on {} {reach}", self.cfg.interface));
+            link.reach = Some(reach);
+        }
         if online && !self.timed {
             self.timed = true;
-            let servers = self.servers.clone();
-            let page = self.cfg.probe.clone();
-            thread::spawn(move || {
-                let dns = servers.lock().expect("the DNS servers are not held by a thread that panicked").clone();
-                match reach::time(&page, &dns) {
-                    Ok(ms) => match skyward_sys::clock::set_wall(ms) {
-                        Ok(()) => {
-                            let _ = skyward_sys::kmsg(&format!("the clock is set from {page}"));
-                        }
-                        Err(e) => {
-                            let _ = skyward_sys::kmsg(&format!("the clock is not set: {e:#}"));
-                        }
-                    },
-                    Err(e) => {
-                        let _ = skyward_sys::kmsg(&format!("{page} named no time: {e:#}"));
-                    }
-                }
-            });
+            self.set_clock();
         }
+    }
+
+    /// Set the clock from the network joined, on a thread of its own: the
+    /// page the network was found to reach answers what time it is.
+    fn set_clock(&mut self) {
+        let (page, servers) = (self.cfg.probe.clone(), self.servers.clone());
+        thread::spawn(move || {
+            let dns = servers.lock().expect("the DNS servers are not held by a thread that panicked").clone();
+            match reach::time(&page, &dns) {
+                Ok(ms) => match skyward_sys::clock::set_wall(ms) {
+                    Ok(()) => {
+                        let _ = skyward_sys::kmsg(&format!("the clock is set from {page}"));
+                    }
+                    Err(e) => {
+                        let _ = skyward_sys::kmsg(&format!("the clock is not set: {e:#}"));
+                    }
+                },
+                Err(e) => {
+                    let _ = skyward_sys::kmsg(&format!("{page} named no time: {e:#}"));
+                }
+            }
+        });
+    }
+
+    /// Join the network whose password was kept, once the WLAN is up, with
+    /// no scan waited for: what was kept says how the network answers.
+    fn join_kept(&mut self) {
+        if self.running.is_none() || self.left || self.tried || self.state.joined.is_some() {
+            return;
+        }
+        let Some((ssid, password, security)) = kept(self.kept_in_data) else { return };
+        self.tried = true;
+        let name = String::from_utf8_lossy(&ssid).into_owned();
+        let _ = skyward_sys::kmsg(&format!("joining {name} with the password kept, no scan waited for"));
+        self.command(Command::Join { ssid, name, security, password });
     }
 
     /// Give the address back, and stop asking for one or keeping it.
@@ -648,15 +619,15 @@ impl Station {
         if let Some((_, stop)) = r.asking.take() {
             stop.store(true, Ordering::Relaxed);
         }
-        if r.lease.take().is_some() {
-            if let Err(e) = iface::unconfigure(&self.cfg.interface) {
-                let _ = skyward_sys::kmsg(&format!("{e:#}"));
-            }
+        if r.lease.take().is_some()
+            && let Err(e) = iface::unconfigure(&self.cfg.interface)
+        {
+            let _ = skyward_sys::kmsg(&format!("{e:#}"));
         }
         // Nothing goes over a network left, and counting starts afresh on
         // the next one.
         if r.counted.take().is_some() {
-            (self.tell)(Report::Traffic(Traffic::default()));
+            self.tell.tell(Report::Traffic(Traffic::default()));
         }
         self.servers.lock().expect("the DNS servers are not held by a thread that panicked").clear();
     }
@@ -668,27 +639,27 @@ impl Station {
             r.retry_at = None;
             return self.ask_address();
         }
-        if r.asking.is_none() {
-            if let Some(h) = &r.lease {
-                if now >= h.due() {
-                    if h.phase >= 2 {
-                        // The lease ran out with no server to keep it.
-                        self.unaddress();
-                        if let Some(j) = &mut self.state.joined {
-                            j.stage = Stage::Addressing;
-                        }
-                    }
-                    return self.ask_address();
+        if r.asking.is_none()
+            && let Some(h) = &r.lease
+            && now >= h.due()
+        {
+            if h.phase >= 2 {
+                // The lease ran out with no server to keep it.
+                self.unaddress();
+                if let Some(j) = &mut self.state.joined {
+                    j.stage = Stage::Addressing;
                 }
             }
+            return self.ask_address();
         }
         if now >= r.polled_at + POLL {
             self.poll_link();
         }
-        if let Some(r) = &self.running {
-            if r.lease.is_some() && r.counted.is_none_or(|c| now >= c.at + TRAFFIC) {
-                self.count(now);
-            }
+        if let Some(r) = &self.running
+            && r.lease.is_some()
+            && r.counted.is_none_or(|c| now >= c.at + TRAFFIC)
+        {
+            self.count(now);
         }
     }
 
@@ -709,7 +680,7 @@ impl Station {
         if let Some(c) = r.counted {
             let secs = now.duration_since(c.at).as_secs_f64();
             let rate = |total: u64, before: u64| (total.saturating_sub(before) as f64 / secs).round() as u64;
-            (self.tell)(Report::Traffic(Traffic { rx: rate(rx, c.rx), tx: rate(tx, c.tx) }));
+            self.tell.tell(Report::Traffic(Traffic { rx: rate(rx, c.rx), tx: rate(tx, c.tx) }));
         }
         r.counted = Some(Counted { at: now, rx, tx });
     }
@@ -761,128 +732,22 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
 }
 
 /// Put a file the driver asks for where the firmware loader looks.
-fn place(file: &Firmware) -> Result<()> {
-    place_firmware(file)
-}
-
-/// Put a file a driver asks the kernel's firmware loader for where the
-/// loader looks, read out of the running recovery or off the partition the
-/// file is kept on. The motor's driver asks for its own the same way, and
-/// ends its probe without it.
-pub(crate) fn place_firmware(file: &Firmware) -> Result<()> {
+pub(crate) fn place(file: &Firmware) -> Result<()> {
     let to = Path::new(FIRMWARE).join(&file.name);
     let dir = to.parent().expect("a firmware file is in a folder");
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     let bytes = match &file.partition {
         None => fs::read(&file.path).with_context(|| format!("read {}", file.path))?,
         Some(partition) => {
-            // The partition may already be mounted where the phone's own
-            // table mounts it, as the configuration's [partitions] asks for
-            // persist: a second mount of the same device is refused while
-            // one is there, whatever is asked of it. Read through that one
-            // first, and mount the partition only when it is nowhere.
-            if let Some(bytes) = read_through_mount(partition, &file.path) {
-                bytes?
-            } else {
-                let at = Path::new(PARTITIONS).join(partition);
-                fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
-                skyward_block::mount::mount_ro(&Path::new(skyward_block::BY_NAME).join(partition), &at)?;
-                let read = fs::read(at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
-                skyward_block::mount::umount(&at)?;
-                read?
-            }
+            let at = Path::new(PARTITIONS).join(partition);
+            fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
+            skyward_block::mount::mount_ro(&Path::new(skyward_block::BY_NAME).join(partition), &at)?;
+            let read = fs::read(at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
+            skyward_block::mount::umount(&at)?;
+            read?
         }
     };
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
-}
-
-/// `path` on `partition` read through a mount the phone's own table already
-/// has, when an earlier mount of that partition puts the file within reach.
-/// `None` when the partition is mounted nowhere and has to be mounted.
-fn read_through_mount(partition: &str, path: &str) -> Option<Result<Vec<u8>>> {
-    let at = skyward_block::fstab::mount_point(partition).ok().flatten()?;
-    let file = at.join(path);
-    // A partition that is mounted somewhere is read through that mount even
-    // when the file is not the one expected: mounting it a second time is
-    // refused while the first is there, so the read's own reason is the one
-    // worth having.
-    Some(fs::read(&file).with_context(|| format!("read {} through {}", file.display(), at.display())))
-}
-
-/// Where a password entered once is kept: on the persist partition, which
-/// nothing unlocks and a flash of the recovery leaves alone, or on the data
-/// partition, which only opens once it is unlocked.
-fn remembered(in_data: bool) -> Option<PathBuf> {
-    let at = skyward_block::fstab::mount_point(if in_data { "data" } else { "persist" }).ok().flatten()?;
-    Some(at.join(REMEMBERED))
-}
-
-/// Keep the password entered for `ssid` for the next run.
-fn keep(ssid: &[u8], password: &str, security: Security, in_data: bool) {
-    let Some(path) = remembered(in_data) else {
-        let _ = skyward_sys::kmsg(if in_data {
-            "the password is not kept: the data partition is not open yet"
-        } else {
-            "the password is not kept: the persist partition is not mounted"
-        });
-        return;
-    };
-    let text = format!(
-        "{}\t{}\t{}\n",
-        supplicant::hex(ssid),
-        supplicant::hex(password.as_bytes()),
-        security_name(security)
-    );
-    if let Err(e) = fs::write(&path, &text) {
-        let _ = skyward_sys::kmsg(&format!("could not keep the password in {}: {e:#}", path.display()));
-        return;
-    }
-    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-}
-
-/// The network a password was kept for, that password, and how the network
-/// is protected.
-fn kept(in_data: bool) -> Option<(Vec<u8>, String, Security)> {
-    let path = remembered(in_data)?;
-    let text = fs::read_to_string(&path).ok()?;
-    let mut fields = text.lines().next()?.split('\t');
-    let (name, password, security) = (fields.next()?, fields.next()?, fields.next()?);
-    Some((unhex(name)?, String::from_utf8(unhex(password)?).ok()?, security_named(security)?))
-}
-
-/// How a network's security is written down beside its password.
-fn security_name(security: Security) -> &'static str {
-    match security {
-        Security::Open => "open",
-        Security::Owe => "owe",
-        Security::Wep => "wep",
-        Security::Psk => "psk",
-        Security::Sae => "sae",
-        Security::PskSae => "psk-sae",
-        Security::Enterprise => "enterprise",
-    }
-}
-
-/// The security written down beside a password, read back.
-fn security_named(text: &str) -> Option<Security> {
-    Some(match text {
-        "open" => Security::Open,
-        "owe" => Security::Owe,
-        "wep" => Security::Wep,
-        "psk" => Security::Psk,
-        "sae" => Security::Sae,
-        "psk-sae" => Security::PskSae,
-        "enterprise" => Security::Enterprise,
-        _ => return None,
-    })
-}
-
-/// The bytes a hex string stands for, two digits a byte.
-fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.is_ascii() || !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok()).collect()
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.
@@ -944,4 +809,63 @@ fn end(child: &mut Child, control: Option<&Control>) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// The file a kept password is read from, in the root of the partition the
+/// screen asks for, or `None` where that partition is not mounted.
+fn remembered(in_data: bool) -> Option<PathBuf> {
+    let partition = if in_data { "data" } else { "persist" };
+    let at = skyward_block::fstab::mount_point(partition).ok().flatten()?;
+    Some(at.join(REMEMBERED))
+}
+
+/// Keep the password the screen gave, with the name and the way the
+/// network answers, for the next run to join it without asking.
+fn keep(ssid: &[u8], password: &str, security: Security, in_data: bool) {
+    let Some(at) = remembered(in_data) else { return };
+    let line = format!("{}\t{}\t{}\n", hex::encode(ssid), hex::encode(password.as_bytes()), security_name(security));
+    let writing = at.with_extension("new");
+    if fs::write(&writing, line).is_err() {
+        return;
+    }
+    let _ = fs::set_permissions(&writing, fs::Permissions::from_mode(0o600));
+    if fs::rename(&writing, &at).is_err() {
+        let _ = fs::remove_file(&writing);
+    }
+}
+
+/// The password kept, with the name and the way the network answers, if one
+/// was kept on the partition the screen asks for.
+fn kept(in_data: bool) -> Option<(Vec<u8>, String, Security)> {
+    let text = fs::read_to_string(remembered(in_data)?).ok()?;
+    let mut parts = text.lines().next()?.split('\t');
+    let ssid = hex::decode(parts.next()?).ok()?;
+    let password = String::from_utf8(hex::decode(parts.next()?).ok()?).ok()?;
+    let security = security_named(parts.next()?)?;
+    Some((ssid, password, security))
+}
+
+fn security_name(security: Security) -> &'static str {
+    match security {
+        Security::Open => "open",
+        Security::Owe => "owe",
+        Security::Wep => "wep",
+        Security::Psk => "psk",
+        Security::Sae => "sae",
+        Security::PskSae => "psk-sae",
+        Security::Enterprise => "enterprise",
+    }
+}
+
+fn security_named(name: &str) -> Option<Security> {
+    Some(match name {
+        "open" => Security::Open,
+        "owe" => Security::Owe,
+        "wep" => Security::Wep,
+        "psk" => Security::Psk,
+        "sae" => Security::Sae,
+        "psk-sae" => Security::PskSae,
+        "enterprise" => Security::Enterprise,
+        _ => return None,
+    })
 }

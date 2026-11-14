@@ -8,7 +8,7 @@ use crate::adb::{self, Connection, Offer, Service};
 use crate::asked::Asked;
 use crate::blockmap::BlockMap;
 use crate::ffs::{Endpoints, Shared, Usb};
-use crate::fuse::{self, Fault, LocalFile, Mount, Name};
+use crate::fuse::{self, Fault, LocalFile, Mount};
 use crate::image::{self, ImageKind};
 use crate::keep::Kept;
 use crate::ota::{self, Log, Status};
@@ -17,6 +17,7 @@ use crate::script::{self, Bar, Request};
 use crate::signature::{self, Verdict};
 use crate::{Command, Event, Failure, Options, Outcome, Reflash, Refusal, Stage, ENGINE_LOG, SCRIPT_LOG};
 use anyhow::{anyhow, bail, ensure, Context as _, Result};
+use skyward_sys::worker::{Teller, Worker};
 use skyward_sys::{kmsg, prop};
 use skyward_vab::{Slot, SlotMaps, SnapshotState};
 use std::collections::HashSet;
@@ -29,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// What runs right before update_engine or an install script starts
@@ -61,12 +62,10 @@ const LINGER: Duration = Duration::from_secs(1);
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 pub struct Installer {
-    events: Receiver<Event>,
     commands: Sender<Command>,
-    /// Readable while events wait.
-    wake: OwnedFd,
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
+    /// The screen lets it go once it has finished.
+    worker: Worker<Event>,
 }
 
 impl Installer {
@@ -110,32 +109,26 @@ impl Installer {
         options: Options,
         work: impl FnOnce(&mut Context) -> Outcome + Send + 'static,
     ) -> Result<Installer> {
-        let (wake, signal) = pipe(libc::O_NONBLOCK)?;
-        let (event_tx, events) = mpsc::channel();
         let (commands, command_rx) = mpsc::channel();
         let shared = Arc::new(Shared::default());
-        let mut ctx =
-            Context { events: event_tx, signal, commands: command_rx, shared: shared.clone(), detach: Some(detach), options, origin };
-        let thread = thread::Builder::new()
-            .name("installer".into())
-            .spawn(move || {
-                let outcome = work(&mut ctx);
-                let _ = kmsg(&format!("install: {outcome:?}"));
-                ctx.send(Event::Finished(outcome));
-            })
-            .context("start the installer")?;
-        Ok(Installer { events, commands, wake, shared, thread: Some(thread) })
+        let theirs = shared.clone();
+        let worker = Worker::start("installer", move |events| {
+            let mut ctx = Context { events, commands: command_rx, shared: theirs, detach: Some(detach), options, origin };
+            let outcome = work(&mut ctx);
+            let _ = kmsg(&format!("install: {outcome:?}"));
+            ctx.send(Event::Finished(outcome));
+        })?;
+        Ok(Installer { commands, shared, worker })
     }
 
+    /// Readable while events wait.
     pub fn fd(&self) -> RawFd {
-        self.wake.as_raw_fd()
+        self.worker.fd()
     }
 
     /// The events since the last call.
     pub fn events(&self) -> Vec<Event> {
-        let mut drain = [0u8; 64];
-        while unsafe { libc::read(self.wake.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len()) } > 0 {}
-        self.events.try_iter().collect()
+        self.worker.events()
     }
 
     /// Write the image the installer holds to `partition` in `slots`.
@@ -174,15 +167,6 @@ impl Installer {
     }
 }
 
-impl Drop for Installer {
-    /// The screen lets the installer go once it has finished.
-    fn drop(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            thread.join().expect("the installer does not panic");
-        }
-    }
-}
-
 /// Where the package comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
@@ -196,25 +180,8 @@ enum Origin {
     Asked { retry: bool },
 }
 
-/// The name a package the phone holds as a file is served under beside
-/// package.zip, so that an install script handed that path names what it is
-/// installing.
-///
-/// A package the computer sends with `adb sideload` has none: the service
-/// string that offers it gives its length and its block size and nothing
-/// else, so the name the user typed stays on the computer, as it does for
-/// Android's own recovery. Such a package is served under package.zip alone,
-/// which is what this recovery has always done. A package the phone holds as
-/// a file is served under that file's own name too: it is the name the owner
-/// picked, and the one a script naming what it installs should see.
-fn name_of(path: &Path) -> Option<Name> {
-    Name::of(path)
-}
-
 struct Context {
-    events: Sender<Event>,
-    /// The write end of the wake pipe.
-    signal: OwnedFd,
+    events: Teller<Event>,
     commands: Receiver<Command>,
     shared: Arc<Shared>,
     detach: Option<Detach>,
@@ -224,10 +191,7 @@ struct Context {
 
 impl Context {
     fn send(&self, event: Event) {
-        if self.events.send(event).is_ok() {
-            // A full pipe already wakes the screen.
-            unsafe { libc::write(self.signal.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
-        }
+        self.events.tell(event);
     }
 }
 
@@ -288,9 +252,7 @@ fn receive(ctx: &mut Context, mut conn: Connection<Endpoints>, offer: Offer, res
         return (outcome, conn);
     }
     ctx.send(Event::Checking { size: offer.size });
-    // A package the computer sends comes with no name: the service string it
-    // was offered in says nothing of one.
-    let mounted = match fuse::mount(offer, None) {
+    let mounted = match fuse::mount(offer) {
         Ok(mounted) => mounted,
         Err(e) => {
             let outcome = failed(e);
@@ -313,32 +275,22 @@ fn run_file(ctx: &mut Context, path: &Path) -> Outcome {
         Err(e) => return Outcome::Failed(Failure::Unreadable(format!("{e:#}"))),
     };
     let _ = kmsg(&format!("install: {}, {} bytes", path.display(), offer.size));
-    serve_local(ctx, file, offer, path, name_of(path))
+    serve_local(ctx, file, offer, path)
 }
 
 /// Install the package the system left on a partition, read through the
-/// map of its blocks at `map`. The map is a name for where the package's
-/// blocks are, not the name of the package: the file the map describes is
-/// the one the owner picked, and nothing here remembers what it was called,
-/// so the package is served under package.zip alone.
+/// map of its blocks at `map`.
 fn run_mapped(ctx: &mut Context, map: &Path) -> Outcome {
     let (blocks, offer) = match BlockMap::read(map).and_then(|m| m.open()) {
         Ok(opened) => opened,
         Err(e) => return Outcome::Failed(Failure::Unreadable(format!("{e:#}"))),
     };
     let _ = kmsg(&format!("install: the package {} maps, {} bytes", map.display(), offer.size));
-    serve_local(ctx, blocks, offer, map, None)
+    serve_local(ctx, blocks, offer, map)
 }
 
-/// Serve a package the phone holds, which `path` names, and install it. It
-/// is served under `name` beside package.zip where there is one.
-fn serve_local<S: fuse::Source + Send + 'static>(
-    ctx: &mut Context,
-    source: S,
-    offer: Offer,
-    path: &Path,
-    name: Option<Name>,
-) -> Outcome {
+/// Serve a package the phone holds, which `path` names, and install it.
+fn serve_local<S: fuse::Source + Send + 'static>(ctx: &mut Context, source: S, offer: Offer, path: &Path) -> Outcome {
     if offer.size == 0 {
         return Outcome::Refused(Refusal::Unknown);
     }
@@ -346,7 +298,7 @@ fn serve_local<S: fuse::Source + Send + 'static>(
         return failed(anyhow!(e).context(format!("serve {}", path.display())));
     }
     ctx.send(Event::Checking { size: offer.size });
-    let mounted = match fuse::mount(offer, name) {
+    let mounted = match fuse::mount(offer) {
         Ok(mounted) => mounted,
         Err(e) => return failed(e),
     };
@@ -475,7 +427,7 @@ fn conclude(done: Done, served: Result<Option<Fault>>, origin: Origin) -> Outcom
 }
 
 fn install<S>(ctx: &mut Context, mount: &Mount<S>, size: u64) -> Result<Done> {
-    let file = File::open(mount.path()).context("open the package")?;
+    let file = File::open(fuse::PACKAGE).context("open the package")?;
     let package = package::identify(BufReader::with_capacity(1 << 16, file))?;
     let _ = kmsg(&format!("install: {}", describe(&package)));
     match package {
@@ -484,8 +436,8 @@ fn install<S>(ctx: &mut Context, mount: &Mount<S>, size: u64) -> Result<Done> {
         // own recovery takes nothing else; an image needs someone to say
         // where it goes.
         Package::Image(_) if matches!(ctx.origin, Origin::Asked { .. }) => Ok(Done::Decided(Outcome::Refused(Refusal::Image))),
-        Package::Image(kind) => flash_image(ctx, mount, kind, size),
-        Package::Script => run_script(ctx, mount, size),
+        Package::Image(kind) => flash_image(ctx, kind, size),
+        Package::Script => run_script(ctx, size),
         Package::System(contents) => install_system(ctx, &contents),
         Package::Unknown => Ok(Done::Decided(Outcome::Refused(Refusal::Unknown))),
     }
@@ -731,11 +683,11 @@ enum Line {
 /// Run update_engine on the package, telling the screen how far it is,
 /// and give its exit code.
 fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
-    let (status_read, status_write) = pipe(0)?;
+    let (status_read, status_write) = pipe()?;
     let status_fd = status_write.as_raw_fd();
     let mut command = std::process::Command::new(ota::PROGRAM);
     command
-        .args(ota::arguments(mount.path(), update, status_fd))
+        .args(ota::arguments(fuse::PACKAGE, update, status_fd))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -826,7 +778,7 @@ fn lines(from: impl Read, mut each: impl FnMut(&str) -> io::Result<()>) -> io::R
     }
 }
 
-fn flash_image<S>(ctx: &Context, mount: &Mount<S>, kind: ImageKind, size: u64) -> Result<Done> {
+fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
     let dir = Path::new(skyward_block::BY_NAME);
     let partitions = image::partitions(kind, dir)?;
     if partitions.is_empty() {
@@ -844,7 +796,7 @@ fn flash_image<S>(ctx: &Context, mount: &Mount<S>, kind: ImageKind, size: u64) -
         installed_boot_set()?;
     }
     let devices: Vec<_> = slots.iter().map(|&slot| image::device(dir, partition, slot)).collect();
-    let mut file = BufReader::with_capacity(1 << 20, File::open(mount.path()).context("open the package")?);
+    let mut file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
     let mut told: Option<Instant> = None;
     image::flash(&mut file, size, &devices, &mut |done, total| {
         if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
@@ -861,12 +813,12 @@ fn flash_image<S>(ctx: &Context, mount: &Mount<S>, kind: ImageKind, size: u64) -
 /// for give them: their shell at /sbin, and the slot's partitions mapped
 /// writable and unmounted. Where the screen asked for it, the zip is first
 /// checked to be signed with one of the phone's update keys.
-fn run_script<S>(ctx: &mut Context, mount: &Mount<S>, size: u64) -> Result<Done> {
+fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     if let Some(refusal) = short_of_charge(ctx.origin)? {
         return Ok(Done::Decided(Outcome::Refused(refusal)));
     }
     if ctx.options.signed {
-        match verify_signature(ctx, mount, size)? {
+        match verify_signature(ctx, size)? {
             Verdict::Signed => {}
             Verdict::Unsigned => return Ok(Done::Decided(Outcome::Refused(Refusal::Unsigned))),
             Verdict::Unverified => return Ok(Done::Decided(Outcome::Refused(Refusal::Unverified))),
@@ -888,7 +840,7 @@ fn run_script<S>(ctx: &mut Context, mount: &Mount<S>, size: u64) -> Result<Done>
         }
     }
     let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
-    extract_script(mount)?;
+    extract_script()?;
     shell_at_sbin()?;
     let kept = hold(ctx, slot)?;
     installed_boot_set()?;
@@ -903,7 +855,7 @@ fn run_script<S>(ctx: &mut Context, mount: &Mount<S>, size: u64) -> Result<Done>
         }
     };
     let mounted = skyward_block::mount::mount_ids()?;
-    let ran = run_binary(ctx, mount);
+    let ran = run_binary(ctx);
     if let Err(e) = clean_up(&mounted, &mapped) {
         let _ = kmsg(&format!("install: not all the script left behind was taken away: {e:#}"));
     }
@@ -920,10 +872,10 @@ fn run_script<S>(ctx: &mut Context, mount: &Mount<S>, size: u64) -> Result<Done>
 /// Check the zip being served, `size` bytes, was signed with one of the
 /// phone's update keys, telling the screen how much of it the check has
 /// read; the screen leaving the page stops it.
-fn verify_signature<S>(ctx: &Context, mount: &Mount<S>, size: u64) -> Result<Verdict> {
+fn verify_signature(ctx: &Context, size: u64) -> Result<Verdict> {
     let certificates = File::open(signature::CERTIFICATES).with_context(|| format!("open {}", signature::CERTIFICATES))?;
     let keys = signature::keys(BufReader::new(certificates)).with_context(|| format!("read {}", signature::CERTIFICATES))?;
-    let package = File::open(mount.path()).context("open the package")?;
+    let package = File::open(fuse::PACKAGE).context("open the package")?;
     let mut told: Option<Instant> = None;
     let verdict = signature::verify(package, size, &keys, |done, total| {
         if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
@@ -937,8 +889,8 @@ fn verify_signature<S>(ctx: &Context, mount: &Mount<S>, size: u64) -> Result<Ver
 }
 
 /// Put the zip's install script where it runs from, for anyone to run.
-fn extract_script<S>(mount: &Mount<S>) -> Result<()> {
-    let zip = File::open(mount.path()).context("open the package")?;
+fn extract_script() -> Result<()> {
+    let zip = File::open(fuse::PACKAGE).context("open the package")?;
     let mut zip = zip::ZipArchive::new(BufReader::new(zip)).context("read the zip directory")?;
     let mut script = zip.by_name(package::UPDATE_BINARY).context("open the install script")?;
     match fs::remove_file(BINARY) {
@@ -987,18 +939,13 @@ impl Drop for Group {
 /// keep all it asks for and writes in the log, and give how it ended and
 /// whether it asked for the cache partition to be erased after. What it
 /// leaves running is ended with it.
-fn run_binary<S>(ctx: &Context, mount: &Mount<S>) -> Result<(i32, bool)> {
+fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let mut log = File::create(SCRIPT_LOG).with_context(|| format!("create {SCRIPT_LOG}"))?;
-    let (requests_read, requests_write) = pipe(0)?;
-    let (output_read, output_write) = pipe(0)?;
+    let (requests_read, requests_write) = pipe()?;
+    let (output_read, output_write) = pipe()?;
     let fd = requests_write.as_raw_fd();
-    // The path the script is handed, as Android's own recovery hands it one:
-    // the name of the package file, and nothing else about it. Scripts work
-    // out what they are installing from that name, so it is where the name a
-    // package is served under is given them.
-    let package = mount.path().display().to_string();
     let mut command = std::process::Command::new(BINARY);
-    command.args([API_VERSION, &fd.to_string(), &package]);
+    command.args([API_VERSION, &fd.to_string(), fuse::PACKAGE]);
     // A script started again after a restart cut it off is told so, as
     // Android's own recovery tells it, to pick up where it was.
     if ctx.origin == (Origin::Asked { retry: true }) {
@@ -1131,10 +1078,10 @@ fn failed(e: anyhow::Error) -> Outcome {
     Outcome::Failed(Failure::Error(format!("{e:#}")))
 }
 
-/// A pipe, both ends closed on exec, with `flags` added.
-fn pipe(flags: libc::c_int) -> Result<(OwnedFd, OwnedFd)> {
+/// A pipe, both ends closed on exec.
+fn pipe() -> Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | flags) } != 0 {
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
         return Err(io::Error::last_os_error()).context("make a pipe");
     }
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })

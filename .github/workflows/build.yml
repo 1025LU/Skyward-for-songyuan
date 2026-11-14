@@ -24,9 +24,27 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  SKYWARD_BUILDER: ${{ github.repository_owner }}
 
 jobs:
+  # A release goes by its tag to whoever downloads it, and a build by the
+  # version built into it, which is what it holds against the newest
+  # release's tag when it looks for an update: a tag naming another
+  # version than the one built would have every phone find an update in
+  # the very build it runs. Such a tag publishes nothing.
+  tag:
+    name: Check that the tag names the version built
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Hold the tag against the workspace's version
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME, and the workspace builds version $version"
+            exit 1
+          fi
+
   check:
     name: Lint and test
     runs-on: ubuntu-24.04
@@ -38,7 +56,7 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace
       - name: Lint what runs on the phone
-        run: cargo ndk -t arm64-v8a --platform 30 clippy --locked -p skyward -p skyward-install -p skyward-systems -p skyward-system-init -- -D warnings
+        run: cargo ndk -t arm64-v8a --platform 30 clippy --locked --workspace --all-targets -- -D warnings
 
   tools:
     name: Build the recovery service and the packer
@@ -56,20 +74,15 @@ jobs:
         run: cargo ndk -t arm64-v8a --platform 30 build --locked --release -p skyward-system-init --target-dir target/system-init
       - name: Build the packer
         run: cargo build --locked --release -p skyward-pack
-      - name: Build the OMAPI bridge
-        run: |
-          sdkmanager "build-tools;37.0.0"
-          bash tools/omapi-bridge/build.sh
       - name: Gather them
         run: |
-          mkdir -p release-tools
-          cp target/aarch64-linux-android/release/skyward target/release/skyward-pack release-tools/
-          cp tools/omapi-bridge/out/omapi-bridge release-tools/omapi-helper
-          cp target/system-init/aarch64-linux-android/release/system-init release-tools/
+          mkdir tools
+          cp target/aarch64-linux-android/release/skyward target/release/skyward-pack tools/
+          cp target/system-init/aarch64-linux-android/release/system-init tools/
       - uses: actions/upload-artifact@v7
         with:
           name: tools
-          path: release-tools/
+          path: tools/
           if-no-files-found: error
           retention-days: 1
 
@@ -106,7 +119,7 @@ jobs:
           name: tools
           path: tools
       - name: Make the tools runnable
-        run: chmod +x tools/skyward tools/skyward-pack tools/omapi-helper
+        run: chmod +x tools/skyward tools/skyward-pack
       - name: Read the stock build the recovery is made on
         id: stock
         run: tools/skyward-pack stock --config "devices/${{ matrix.device }}.toml" >> "$GITHUB_OUTPUT"
@@ -134,11 +147,9 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="${GITHUB_SHA::7}"; fi
           name="skyward-$version-$DEVICE-$STOCK"
           mkdir out
-          omapi=()
-          if [ "$DEVICE" = dada ]; then omapi=(--omapi tools/omapi-helper); fi
-          tools/skyward-pack recovery --stock stock/recovery.img --binary tools/skyward --system-init tools/system-init --config "devices/$DEVICE.toml" \
-            --font resources/fonts/MiSansVF.ttf --mono resources/fonts/KirkMono-Regular.ttf \
-            --mono-license resources/fonts/KirkMono-OFL.txt "${omapi[@]}" --out "out/$name.img"
+          tools/skyward-pack recovery --stock stock/recovery.img --binary tools/skyward --system-init tools/system-init \
+            --config "devices/$DEVICE.toml" --font resources/fonts/MiSansVF.ttf --mono resources/fonts/KirkMono-Regular.ttf \
+            --mono-license resources/fonts/KirkMono-OFL.txt --out "out/$name.img"
           echo "name=$name" >> "$GITHUB_OUTPUT"
       # The image is the whole partition, flashed as it is, and most of it
       # is the room the recovery leaves empty; it is handed out zipped.
@@ -158,7 +169,7 @@ jobs:
   release:
     name: Publish the release
     if: github.ref_type == 'tag'
-    needs: [check, recovery]
+    needs: [tag, check, recovery]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

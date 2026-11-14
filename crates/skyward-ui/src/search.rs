@@ -46,7 +46,6 @@ pub const ENTRIES: &[Entry] = &[
     entry(ADVANCED, HOME, Screen::Advanced, &["gaoji", "gj", "advanced"]),
     entry(["文件管理", "檔案管理", "File manager"], ADVANCED, Screen::Files, &["wenjianguanli", "wjgl", "files", "file"]),
     entry(["终端", "終端機", "Terminal"], ADVANCED, Screen::Terminal, &["zhongduan", "zd", "terminal", "shell"]),
-    entry(["禁用 AVB", "停用 AVB", "Disable AVB"], ADVANCED, Screen::Avb, &["jinyongavb", "jyavb", "avb", "verity", "vbmeta", "verification"]),
     entry(
         ["修复 SELinux 上下文", "修復 SELinux 上下文", "Fix SELinux contexts"],
         ADVANCED,
@@ -79,10 +78,10 @@ pub const ENTRIES: &[Entry] = &[
     entry(["启动槽位", "啟動槽位", "Boot slot"], ["重启", "重新啟動", "Reboot"], Screen::Slot, &["qidongcaowei", "qdcw", "caowei", "cw", "slot"]),
     entry(["关于本机", "關於手機", "About phone"], SETTINGS, Screen::About, &["guanyubenji", "gybj", "about", "banben", "version"]),
     entry(
-        ["关于 Skyward", "關於 Skyward", "About Skyward"],
+        ["Skyward 更新", "Skyward 更新", "Skyward update"],
         SETTINGS,
         Screen::SkywardUpdate,
-        &["guanyuskyward", "gyskyward", "skyward", "about"],
+        &["skywardgengxin", "skywardgx", "shengji", "xiazai", "update", "upgrade", "release", "github"],
     ),
     entry(
         ["全部参数与信息", "全部規格與資訊", "All specs"],
@@ -188,7 +187,7 @@ mod tests {
         assert_eq!(titles("wifi"), ["WLAN"]);
         assert_eq!(find_on("wlan", Lang::Hans, |_| true).iter().map(|e| e.title[0]).collect::<Vec<_>>(), ["WLAN"]);
         assert!(find_on("wlan", Lang::Hans, |s| s != Screen::Wlan).is_empty());
-        assert_eq!(titles("xiazai"), ["系统更新"]);
+        assert_eq!(titles("xiazai"), ["系统更新", "Skyward 更新"]);
     }
 
     #[test]
@@ -200,8 +199,9 @@ mod tests {
     }
 
     #[test]
-    fn skyward_is_found_under_about() {
-        assert_eq!(titles("skyward"), ["关于 Skyward"]);
+    fn skyward_is_updated_from_its_own_page() {
+        assert_eq!(titles("skyward"), ["Skyward 更新"]);
+        assert_eq!(titles("gengxin"), ["系统更新", "Skyward 更新"]);
         assert!(find_on("skyward", Lang::Hans, |s| s != Screen::SkywardUpdate).is_empty());
     }
 
@@ -209,7 +209,7 @@ mod tests {
     fn a_title_is_found_in_the_language_the_pages_speak() {
         let english = |query| find(query, Lang::En).iter().map(|e| e.title[2]).collect::<Vec<_>>();
         assert_eq!(english("brightness"), ["Screen brightness"]);
-        assert_eq!(english("about"), ["About phone", "About Skyward"]);
+        assert_eq!(english("about"), ["About phone"]);
         assert_eq!(english("wi-fi"), ["Wi-Fi"]);
         let traditional = find("設定", Lang::Hant);
         assert_eq!(traditional.first().map(|e| e.title[1]), Some("設定"));

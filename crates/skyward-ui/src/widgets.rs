@@ -163,10 +163,11 @@ pub(crate) fn wrap(c: &Canvas, face: &Face, text: &str, px: f32, max_w: f32) -> 
                     None => {}
                 }
             }
-            if let Some((at, before)) = line[..split].char_indices().last() {
-                if at > 0 && NO_LINE_END.contains(before) {
-                    split = at;
-                }
+            if let Some((at, before)) = line[..split].char_indices().last()
+                && at > 0
+                && NO_LINE_END.contains(before)
+            {
+                split = at;
             }
             let rest = line.split_off(split);
             lines.push(line.trim_end().to_string());
@@ -1658,14 +1659,12 @@ pub fn list_toned(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row], 
     Block { bottom: top + h, rows: rects }
 }
 
-/// Account-style card: avatar, name and detail, a strip of readings, then
-/// optional rows. The first rect returned covers the name row.
-#[allow(clippy::too_many_arguments)]
-pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, sub: &str, stats: &[Stat], rows: &[Row]) -> Block {
+/// Account-style card: avatar, name and detail, then optional rows. The
+/// first rect returned covers the name row.
+pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, sub: &str, rows: &[Row]) -> Block {
     let m = &t.m;
     let lays: Vec<Layout> = rows.iter().map(|r| layout(c, t, f, r)).collect();
-    let strip = if stats.is_empty() { 0.0 } else { m.dp(STAT_TOP) + stat_height(t, f) };
-    let h = m.account_row_h + strip + lays.iter().map(|l| l.h).sum::<f32>();
+    let h = m.account_row_h + lays.iter().map(|l| l.h).sum::<f32>();
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
     c.fill_round_rect(card_x, top, right - card_x, h, m.card_radius, t.pal.card);
 
@@ -1687,56 +1686,12 @@ pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, 
     let tone = Tone::page(t);
     let mut rects = vec![Rect::new(card_x, top, right - card_x, m.account_row_h)];
     let mut y = top + m.account_row_h;
-    if !stats.is_empty() {
-        y = stat_strip(c, t, f, y + m.dp(STAT_TOP), stats);
-    }
     for (r, l) in rows.iter().zip(&lays) {
         draw_row(c, t, f, r, l, y, &tone);
         rects.push(Rect::new(card_x, y, right - card_x, l.h));
         y += l.h;
     }
     Block { bottom: top + h, rows: rects }
-}
-
-/// One reading of the device card's strip: a value in the row's type over
-/// its caption, both left-aligned in the strip's column.
-pub struct Stat<'a> {
-    pub value: String,
-    pub caption: &'a str,
-}
-
-/// The room the strip asks for over its values, under them and above the
-/// rows that follow.
-const STAT_TOP: f32 = 16.0;
-const STAT_BOTTOM: f32 = 24.0;
-
-/// How tall the strip's two lines are, without the room around them.
-fn stat_height(t: &Theme, f: &Fonts) -> f32 {
-    let (vt, vb) = f.heading.ink(t.m.row_title_px);
-    let (ct, cb) = f.body.ink(t.m.label_px);
-    (vb - vt) + t.m.sub_gap + (cb - ct) + t.m.dp(STAT_BOTTOM)
-}
-
-/// The device card's strip of readings under its name row: one column per
-/// reading, the first at the card's inner edge and the rest spread evenly
-/// over the room left of the last one's value.
-fn stat_strip(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Stat]) -> f32 {
-    let m = &t.m;
-    let (card_x, right) = (m.margin, m.w as f32 - m.margin);
-    let x = card_x + m.inner;
-    let (vt, vb) = f.heading.ink(m.row_title_px);
-    let caption_top = top + (vb - vt) + m.sub_gap;
-    let bottom = top + stat_height(t, f);
-    // The last column ends at the card's inner edge; the ones before it start
-    // where the room left of that one's value spreads them.
-    let last_w = c.text_width(&f.heading, &items[items.len() - 1].value, m.row_title_px);
-    let pitch = if items.len() > 1 { (right - m.inner - last_w - x) / (items.len() - 1) as f32 } else { 0.0 };
-    for (k, s) in items.iter().enumerate() {
-        let cx = x + pitch * k as f32;
-        c.text_top(&f.heading, &s.value, cx, top, m.row_title_px, t.pal.text, None);
-        c.text_top(&f.body, s.caption, cx, caption_top, m.label_px, t.pal.spec_label, None);
-    }
-    bottom
 }
 
 pub fn switch(c: &mut Canvas, t: &Theme, right: f32, cy: f32, on: bool) {
@@ -1940,11 +1895,8 @@ pub fn keypad_height(t: &Theme) -> f32 {
 /// The keypad a screen lock's code is typed on, its top at `top`: four rows
 /// of three round keys, `pressed` drawn held down, and the last row erasing
 /// and confirming, in `l`. Returns where each key answers a touch.
-pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>, dim: bool) -> Vec<(Rect, Cap)> {
+pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>) -> Vec<(Rect, Cap)> {
     let m = &t.m;
-    // While the recovery is still working out which screen lock to read the
-    // keys are drawn faded: they are there, but they answer nothing yet.
-    let fade = |color: Rgba| if dim { mix(color, t.pal.bg, 0.66) } else { color };
     let (size, gx, gy) = (m.dp(PAD_KEY_DP), m.dp(PAD_GAP_X_DP), m.dp(PAD_GAP_Y_DP));
     let left = (m.w as f32 - (3.0 * size + 2.0 * gx)) / 2.0;
     let mut keys = Vec::with_capacity(PAD_KEYS.len());
@@ -1959,18 +1911,18 @@ pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: 
         // page rather than on a key of their own.
         let bare = matches!(cap, Cap::Backspace | Cap::Enter);
         let base = match cap {
-            Cap::Enter => fade(t.pal.accent),
-            _ if bare => fade(t.pal.bg),
-            _ => fade(t.pal.card),
+            Cap::Enter => t.pal.accent,
+            _ if bare => t.pal.bg,
+            _ => t.pal.card,
         };
         let fill = if pressed == Some(cap) { mix(base, t.pal.text, 0.16) } else { base };
         if !bare || cap == Cap::Enter {
             c.fill_circle(cx, cy, r.w / 2.0, fill);
         }
         match cap {
-            Cap::Char(ch) => c.text_center(&f.heading, &ch.to_string(), cx, cy, m.dp(34.0), fade(t.pal.text)),
-            Cap::Backspace => c.text_center(&f.body, l.pick(["删除", "刪除", "Delete"]), cx, cy, m.row_title_px, fade(t.pal.accent)),
-            _ => c.text_center(&f.heading, l.pick(["解密", "解密", "Decrypt"]), cx, cy, m.row_title_px, fade(Rgba::rgb(255, 255, 255))),
+            Cap::Char(ch) => c.text_center(&f.heading, &ch.to_string(), cx, cy, m.dp(34.0), t.pal.text),
+            Cap::Backspace => c.text_center(&f.body, l.pick(["删除", "刪除", "Delete"]), cx, cy, m.row_title_px, t.pal.accent),
+            _ => c.text_center(&f.heading, l.pick(["解密", "解密", "Decrypt"]), cx, cy, m.row_title_px, Rgba::rgb(255, 255, 255)),
         }
     }
     keys
@@ -2665,18 +2617,14 @@ pub fn keyboard_height(t: &Theme) -> f32 {
 /// key answers a touch, the gaps between keys shared out among their
 /// neighbours.
 #[allow(clippy::too_many_arguments)]
-pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str, dim: bool) -> Vec<(Rect, Cap)> {
+pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str) -> Vec<(Rect, Cap)> {
     let m = &t.m;
     let w = m.w as f32;
-    // Faded while the recovery still works out which screen lock to read.
-    let fade = |color: Rgba| if dim { mix(color, t.pal.bg, 0.7) } else { color };
     let (panel, key, side, ink, shadow) = if t.dark {
         (Rgba::rgb(18, 18, 18), Rgba::rgb(58, 58, 58), Rgba::rgb(38, 38, 38), Rgba::rgb(237, 237, 237), Rgba::rgb(0, 0, 0))
     } else {
         (Rgba::rgb(224, 226, 231), Rgba::rgb(255, 255, 255), Rgba::rgb(193, 198, 207), Rgba::rgb(0, 0, 0), Rgba::rgb(138, 141, 147))
     };
-    let (panel, key, side, ink, shadow, enter_ink) =
-        (fade(panel), fade(key), fade(side), fade(ink), fade(shadow), fade(Rgba::rgb(255, 255, 255)));
     c.fill_rect(0.0, top, w, keyboard_height(t), panel);
     let (pad, gx, gy, kh) = (m.dp(KEYBOARD_PAD_X_DP), m.dp(KEY_GAP_X_DP), m.dp(KEY_GAP_Y_DP), m.dp(KEY_H_DP));
     let kw = (w - pad * 2.0 - gx * 9.0) / 10.0;
@@ -2727,7 +2675,7 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
     for &(r, cap) in &keys {
         let plain = matches!(cap, Cap::Char(_) | Cap::Space);
         let base = match cap {
-            Cap::Enter => fade(t.pal.accent),
+            Cap::Enter => t.pal.accent,
             Cap::Shift if layer == Layer::Shifted => key,
             _ if plain => key,
             _ => side,
@@ -2744,7 +2692,7 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
                 c.text_center(&f.heading, &label.to_string(), cx, cy, glyph_px, ink);
             }
             Cap::Space => c.text_center(&f.body, l.pick(["空格", "空格", "Space"]), cx, cy, m.sub_px, ink),
-            Cap::Enter => c.text_center(&f.heading, enter, cx, cy, m.sub_px, enter_ink),
+            Cap::Enter => c.text_center(&f.heading, enter, cx, cy, m.sub_px, Rgba::rgb(255, 255, 255)),
             Cap::Show(Layer::Digits) => c.text_center(&f.heading, "123", cx, cy, m.sub_px, ink),
             Cap::Show(Layer::Symbols) => c.text_center(&f.heading, "#+=", cx, cy, m.sub_px, ink),
             Cap::Show(_) => c.text_center(&f.heading, "abc", cx, cy, m.sub_px, ink),

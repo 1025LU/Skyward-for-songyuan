@@ -49,15 +49,6 @@ pub struct Settings {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
-    /// The Wi-Fi password is kept on the data partition, which only opens
-    /// once it is unlocked, rather than on the persist partition.
-    pub wlan_kept: bool,
-    /// A dark panel keeps the clock and the phone's readings on the glass in
-    /// the panel's own doze, rather than being put out.
-    pub always_on: bool,
-    /// Missing in older files: use the device's initial choice.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub double_tap: Option<bool>,
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
@@ -135,9 +126,6 @@ impl Settings {
             vibrate: state.vibrate,
             vibration: state.vibration,
             file_transfer: state.file_transfer,
-            wlan_kept: state.wlan_kept,
-            always_on: state.always_on,
-            double_tap: Some(state.double_tap),
             install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery },
             backup: Backup {
                 parts: names(&state.backup, &PARTS),
@@ -196,11 +184,6 @@ impl Settings {
             state.vibration = self.vibration;
         }
         state.file_transfer = self.file_transfer;
-        state.wlan_kept = self.wlan_kept;
-        state.always_on = self.always_on;
-        if let Some(on) = self.double_tap {
-            state.double_tap = on && state.double_taps;
-        }
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
         state.backup = picked(&self.backup.parts, &PARTS);
@@ -220,7 +203,7 @@ impl Settings {
 
 /// The names of those of `all` that are `ticked`.
 fn names(ticked: &[bool], all: &[&str]) -> Vec<String> {
-    all.iter().zip(ticked).filter(|(_, &on)| on).map(|(name, _)| name.to_string()).collect()
+    all.iter().zip(ticked).filter(|&(_, &on)| on).map(|(name, _)| name.to_string()).collect()
 }
 
 /// Which of `all` the names `kept` tick.
@@ -314,21 +297,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn double_tap_keeps_the_device_default_for_old_settings_and_remembers_the_switch() {
-        let mut state = State { double_taps: true, double_tap: true, ..State::default() };
-        Settings::read("{}").unwrap().apply(&mut state);
-        assert!(state.double_tap, "an older settings file keeps the device's initial choice");
-        Settings::read(r#"{"double_tap": false}"#).unwrap().apply(&mut state);
-        let saved = Settings::read(&Settings::of(&state).text()).unwrap();
-        state.double_tap = true;
-        saved.apply(&mut state);
-        assert!(!state.double_tap, "the disabled switch survives a restart");
-        state.double_taps = false;
-        Settings::read(r#"{"double_tap": true}"#).unwrap().apply(&mut state);
-        assert!(!state.double_tap, "a kept setting does not invent device support");
-    }
-
-    #[test]
     fn the_settings_go_round_through_their_file() {
         let state = State {
             lang: Lang::En,
@@ -340,7 +308,6 @@ mod tests {
             vibrate: false,
             vibration: 0.4,
             file_transfer: false,
-            always_on: false,
             check_signature: true,
             keep_recovery: false,
             backup: [false, true, true, false],
@@ -356,7 +323,6 @@ mod tests {
         kept.apply(&mut back);
         assert_eq!(Settings::of(&back), Settings::of(&state));
         assert_eq!((back.lang, back.screen_off, back.time_zone), (Lang::En, 6, 7));
-        assert!(!back.always_on, "the face on a dark panel is kept off too");
     }
 
     #[test]
@@ -369,7 +335,6 @@ mod tests {
         assert_eq!(json["backup"]["parts"], serde_json::json!(["boot", "modem"]));
         assert_eq!(json["logs"]["to"], "temporary");
         assert_eq!(json["spoken"], "zh-Hans");
-        assert_eq!(json["always_on"], true, "the face on a dark panel is on until turned off");
         assert!(json.get("language").is_none(), "no language is chosen until one is");
         let never = Settings::of(&State { screen_off: SCREEN_OFF.len() - 1, ..State::default() });
         assert_eq!(never.screen_off, 0, "a screen that stays on");

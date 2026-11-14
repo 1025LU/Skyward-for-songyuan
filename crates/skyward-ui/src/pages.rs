@@ -1,7 +1,7 @@
 use crate::app::{
     Action, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field, FileKind,
     FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows, Screen,
-    Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
+    SkywardEnd, SkywardJob, Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
     BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE,
     USB_DRIVE_WANTED, WIPES, installs, starting,
 };
@@ -24,7 +24,7 @@ use skyward_install::{Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::Progress;
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Bands, Network, Power, Stage as Joining};
-use skyward_systems::Who;
+use skyward_systems::{Held, Who};
 use skyward_vab::{Slot, Standing};
 use std::path::Path;
 
@@ -80,7 +80,6 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::RestoreBackup => restore_backup(cx),
         Screen::BackupJob => backup_job(cx),
         Screen::Advanced => advanced(cx),
-        Screen::Avb => avb(cx),
         Screen::Files => files(cx),
         Screen::FileInfo => file_info(cx),
         Screen::Permissions => permissions(cx),
@@ -128,7 +127,6 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::Backup => (["滑动以备份", "滑動以備份", "Slide to back up"], false),
         Confirm::Restore => (["滑动以恢复", "滑動以還原", "Slide to restore"], true),
         Confirm::Slot => (["滑动以切换", "滑動以切換", "Slide to switch"], true),
-        Confirm::Avb => (if s.avb_disable_verity { ["滑动以禁用", "滑動以停用", "Slide to disable"] } else { ["滑动以启用", "滑動以啟用", "Slide to enable"] }, true),
         Confirm::FactoryReset => (["滑动以恢复出厂设置", "滑動以恢復原廠設定", "Slide to factory reset"], true),
         Confirm::DeleteEntry | Confirm::DeleteBackup => (["滑动以删除", "滑動以刪除", "Slide to delete"], true),
         Confirm::Install => (INSTALL, false),
@@ -168,7 +166,6 @@ const ABOUT: Text = ["关于本机", "關於手機", "About phone"];
 const SPECS: Text = ["全部参数与信息", "全部規格與資訊", "All specs"];
 const LOGS: Text = ["导出日志", "匯出記錄", "Export logs"];
 const SCREEN_TIMEOUT: Text = ["息屏时间", "螢幕自動關閉", "Screen timeout"];
-const ALWAYS_ON: Text = ["息屏显示", "螢幕關閉顯示", "Always-on display"];
 const UPDATE: Text = ["系统更新", "系統更新", "System update"];
 const SKYWARD_UPDATE: Text = ["关于 Skyward", "關於 Skyward", "About Skyward"];
 const FILES: Text = ["文件管理", "檔案管理", "File manager"];
@@ -213,9 +210,8 @@ fn hits(rects: &[Rect], actions: &[Action]) -> Vec<Hit> {
 }
 
 /// Recovery home, laid out like the Settings root: title, search, a device
-/// card, then grouped entries. The card's strip carries the readings: the
-/// slot, the data partition's lock, the room left on it and the battery; the
-/// status bar adds the battery's temperature.
+/// card, then grouped entries. The status bar carries the readings: the
+/// slot, the data partition's lock and the battery's temperature.
 pub fn home(cx: &Ctx) -> Frame {
     let (t, f, i, l) = (cx.t, cx.f, cx.info, cx.state.lang);
     let mut c = long_page(cx);
@@ -262,11 +258,7 @@ pub fn home(cx: &Ctx) -> Frame {
         rows.push(Row::new(l.pick(SECOND_FAILED)).icon(RED, Icon::Systems).subtitle(why).trail(Trail::Arrow));
         opens.push(Some(Action::Open(Screen::Systems)));
     }
-    // The card holds the name and the build and nothing else: the strip of
-    // readings that used to sit under them (the slot, the data partition,
-    // the room left, the battery) is gone from this page. Only rows that ask
-    // for something to be done stay.
-    let card = widgets::device_card(&mut c, t, f, y, &i.model, &sub, &[], &rows);
+    let card = widgets::device_card(&mut c, t, f, y, &i.model, &sub, &rows);
     out.push(Hit { rect: card.rows[0], action: Action::Open(Screen::About) });
     out.extend(card.rows[1..].iter().zip(&opens).filter_map(|(&rect, open)| open.map(|action| Hit { rect, action })));
     y = card.bottom + t.m.card_gap;
@@ -293,29 +285,20 @@ pub fn home(cx: &Ctx) -> Frame {
         out.extend(hits(&first.rows, &opens));
         y = first.bottom + t.m.card_gap;
     }
-    // Decrypting leads back to the screen lock, and is a tool only while
-    // there is still something to open: once the files are open the row goes
-    // whole, with nothing left to lead to.
-    let mut rows = vec![
+    let tools = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(["安装", "安裝", "Install"])).icon(GREEN, Icon::Install),
         Row::new(l.pick(["备份", "備份", "Backup"])).icon(BLUE, Icon::Backup),
         Row::new(l.pick(["恢复", "還原", "Restore"])).icon(PURPLE, Icon::Restore),
         Row::new(l.pick(["挂载", "掛載", "Mount"])).icon(SLATE, Icon::Mount),
-    ];
-    let mut opens = vec![
+        Row::new(l.pick(DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
+    ]);
+    out.extend(hits(&tools.rows, &[
         Action::Open(Screen::Install),
         Action::Open(Screen::Backup),
         Action::Open(Screen::Restore),
         Action::Open(Screen::Mount),
-    ];
-    if !matches!(cx.state.data, Data::Open | Data::Erased) {
-        rows.push(
-            Row::new(l.pick(DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
-        );
-        opens.push(Action::Open(Screen::Decrypt));
-    }
-    let tools = widgets::list(&mut c, t, f, y, &rows);
-    out.extend(hits(&tools.rows, &opens));
+        Action::Open(Screen::Decrypt),
+    ]));
     y = tools.bottom + t.m.card_gap;
     let target = l.pick(REBOOT_TARGETS[cx.state.reboot].0);
     let system = widgets::list(&mut c, t, f, y, &[
@@ -387,32 +370,7 @@ pub fn settings(cx: &Ctx) -> Frame {
     if let Some(r) = vibration.below {
         out.push(Hit { rect: r, action: Action::Toggle(Switch::Vibrate) });
     }
-    // A phone whose panel has a doze of its own keeps a little on the glass
-    // with the screen off; one whose panel has none shows nothing to offer.
-    // It sits under the vibration, so the settings above it stay where the
-    // pages have always put them.
-    let mut y = vibration.bottom;
-    if s.panel_dozes {
-        y = widgets::section(&mut c, t, f, y, l.pick(["息屏显示", "螢幕關閉顯示", "Always-on display"]));
-        let on = Row::new(l.pick(ALWAYS_ON)).trail(Trail::Switch(s.always_on));
-        let aod = widgets::list(&mut c, t, f, y, &[on]);
-        out.extend(hits(&aod.rows, &[Action::Toggle(Switch::AlwaysOn)]));
-        let note = l.pick([
-            "屏幕熄灭后仍显示时间、电量、槽位与解密状态，背光保持关闭。",
-            "螢幕關閉後仍顯示時間、電量、槽位與解密狀態，背光保持關閉。",
-            "With the screen off, the time, the battery, the slot and the data partition stay on the glass, with the backlight out.",
-        ]);
-        y = widgets::footnote(&mut c, t, f, aod.bottom, note);
-    }
-    if s.double_taps {
-        let gesture = widgets::list(&mut c, t, f, y, &[
-            Row::new(l.pick(["双击唤醒", "點兩下喚醒", "Double tap to wake"]))
-                .icon(BLUE, Icon::Power).trail(Trail::Switch(s.double_tap)),
-        ]);
-        out.extend(hits(&gesture.rows, &[Action::Toggle(Switch::DoubleTap)]));
-        y = gesture.bottom;
-    }
-    y = widgets::section(&mut c, t, f, y, l.pick(["通用", "一般", "General"]));
+    y = widgets::section(&mut c, t, f, vibration.bottom, l.pick(["通用", "一般", "General"]));
     let general = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(LANGUAGE)).icon(BLUE, Icon::Globe).trail(Trail::Value(l.name())),
         Row::new(l.pick(TIME_ZONE)).icon(ORANGE, Icon::Clock).trail(Trail::Value(l.pick(TIME_ZONES[s.time_zone].0))),
@@ -430,16 +388,34 @@ pub fn settings(cx: &Ctx) -> Frame {
     y = widgets::section(&mut c, t, f, y, l.pick(["调试", "偵錯", "Debugging"]));
     let debug = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal)]);
     out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));
+    y = widgets::section(&mut c, t, f, debug.bottom, l.pick(["关于", "關於", "About"]));
+    let mut rows = vec![Row::new(l.pick(ABOUT)).trail(Trail::Value(VERSION))];
+    let mut opens = vec![Action::Open(Screen::About)];
     if s.offers(Screen::SkywardUpdate) {
-        y = widgets::section(&mut c, t, f, debug.bottom, l.pick(["关于", "關於", "About"]));
         let row = Row::new(l.pick(SKYWARD_UPDATE));
-        let about = widgets::list(&mut c, t, f, y, &[row]);
-        out.extend(hits(&about.rows, &[Action::Open(Screen::SkywardUpdate)]));
-        y = about.bottom;
-    } else {
-        y = debug.bottom;
+        rows.push(match skyward_value(cx) {
+            Some(value) => row.trail(Trail::Value(value)),
+            None => row,
+        });
+        opens.push(Action::Open(Screen::SkywardUpdate));
     }
-    Frame::new(t, fit(c, t, y), out, l.pick(SETTINGS), top)
+    let about = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&about.rows, &opens));
+    Frame::new(t, fit(c, t, about.bottom), out, l.pick(SETTINGS), top)
+}
+
+/// What the settings page says beside its Skyward update entry: an update
+/// under way, or a newer release found.
+fn skyward_value(cx: &Ctx) -> Option<&'static str> {
+    let (s, l) = (cx.state, cx.state.lang);
+    if s.updating_skyward() {
+        return Some(l.pick(["正在更新", "正在更新", "Updating"]));
+    }
+    match (s.skyward_newest(), &s.skyward_job) {
+        (_, Some(SkywardJob { outcome: Some(SkywardEnd::Updated(_)), .. })) => Some(l.pick(["已更新", "已更新", "Updated"])),
+        (Some(n), _) if n.newer && n.build.is_some() => Some(l.pick(["有新版本", "有新版本", "New version"])),
+        _ => None,
+    }
 }
 
 /// How long the screen stays on with nothing touched, opened from the
@@ -714,12 +690,23 @@ pub fn specs(cx: &Ctx) -> Frame {
 pub fn decrypt(cx: &Ctx) -> Frame {
     let (c, l) = (page(cx), cx.state.lang);
     match &cx.state.data {
-        Data::Locked { user, keys, checking } => code(cx, c, *user, *keys, *checking, false),
-        // The keys stand as soon as the screen lights, so what is asked of the
-        // user is there to see; until the recovery knows which screen lock to
-        // read they are drawn faded and take no touch.
-        Data::Closed | Data::Opening => code(cx, c, 0, Keys::Digits, false, true),
-        Data::Open => open_with_others(cx, c),
+        Data::Locked { user, keys, checking } => code(cx, c, *user, *keys, *checking),
+        Data::Closed | Data::Opening => data_status(
+            cx,
+            c,
+            Icon::Lock,
+            l.pick(["解密 data 分区", "解密 data 分割區", "Decrypt the data partition"]),
+            Some(l.pick(["正在读取锁屏方式", "正在讀取螢幕鎖定方式", "Reading the screen lock"])),
+            None,
+        ),
+        Data::Open => data_status(
+            cx,
+            c,
+            Icon::Folder,
+            l.pick(["data 分区已解密", "data 分割區已解密", "The data partition is decrypted"]),
+            Some(l.pick(["你可以在「文件管理」中查看本机文件", "你可以在「檔案管理」中查看本機檔案", "You can see the phone's files in File manager"])),
+            None,
+        ),
         Data::Failed(why) => data_status(cx, c, Icon::Lock, l.pick(["未能打开 data 分区", "無法開啟 data 分割區", "Couldn't open the data partition"]), None, Some(why)),
         Data::Erased => data_status(
             cx,
@@ -730,78 +717,6 @@ pub fn decrypt(cx: &Ctx) -> Frame {
             None,
         ),
     }
-}
-
-/// The partitions open: the owner's files first, then, where a phone keeps
-/// further users whose own files are still closed — a second space's, a
-/// cloned app's — each offered by name, since the owner came to open the
-/// owner's files and those do not hold the recovery. Tapping one asks for
-/// that user's screen lock.
-fn open_with_others(cx: &Ctx, mut c: Canvas) -> Frame {
-    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let m = &t.m;
-    let others = &s.others;
-    if others.is_empty() {
-        return data_status(
-            cx,
-            c,
-            Icon::Folder,
-            l.pick(["data 分区已解密", "data 分割區已解密", "The data partition is decrypted"]),
-            Some(l.pick(["你可以在「文件管理」中查看本机文件", "你可以在「檔案管理」中查看本機檔案", "You can see the phone's files in File manager"])),
-            None,
-        );
-    }
-    let x = m.w as f32 / 2.0;
-    let sign_cy = m.dp(150.0);
-    c.fill_circle(x, sign_cy, m.dp(30.0), t.pal.card);
-    icons::glyph(&mut c, Icon::Folder, x, sign_cy, m.dp(40.0), t.pal.accent);
-    c.text_center(&f.heading, l.pick(["data 分区已解密", "data 分割區已解密", "The data partition is decrypted"]), x, sign_cy + m.dp(64.0), m.dp(24.0), t.pal.text);
-    c.text_center(
-        &f.body,
-        l.pick(["你可以在「文件管理」中查看本机文件", "你可以在「檔案管理」中查看本機檔案", "You can see the phone's files in File manager"]),
-        x,
-        sign_cy + m.dp(98.0),
-        m.sub_px,
-        t.pal.subtitle,
-    );
-    // The users still closed, each a row that asks for that user's lock.
-    let note = l.pick([
-        "以下用户的文件尚未解锁，其他用户的数据不受影响：",
-        "以下使用者的檔案尚未解鎖，其他使用者的資料不受影響：",
-        "These users' files are still closed; the other users' are not affected:",
-    ]);
-    // The rows borrow their names, so the names are made first and outlive
-    // them.
-    let names: Vec<String> = others
-        .iter()
-        .map(|(user, _)| match *user {
-            0 => l.pick(["本机用户", "本機使用者", "This phone's user"]).to_string(),
-            user => tr!(l, "用户 {user}", "使用者 {user}", "User {user}"),
-        })
-        .collect();
-    let controls: Vec<&'static str> = others
-        .iter()
-        .map(|(_, keys)| {
-            l.pick(match *keys {
-                Keys::Pattern => ["图案", "圖案", "Pattern"],
-                Keys::Digits => ["密码", "密碼", "PIN"],
-                Keys::Letters => ["密码", "密碼", "Password"],
-            })
-        })
-        .collect();
-    let rows: Vec<Row> = names
-        .iter()
-        .zip(&controls)
-        .map(|(name, control)| Row::new(name).icon(SLATE, Icon::Lock).trail(Trail::Value(control)))
-        .collect();
-    let top = sign_cy + m.dp(140.0);
-    let y = widgets::footnote(&mut c, t, f, top, note);
-    let list = widgets::list(&mut c, t, f, y, &rows);
-    let mut out: Vec<Hit> = list.rows.iter().zip(others).map(|(&rect, (user, _))| Hit { rect, action: Action::UnlockUser(*user) }).collect();
-    let leave_cy = m.h as f32 - m.dp(64.0);
-    c.text_center(&f.heading, l.pick(["完成", "完成", "Done"]), x, leave_cy, m.row_title_px, t.pal.accent);
-    out.push(Hit { rect: Rect::new(x - m.dp(80.0), leave_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, back: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
 }
 
 /// Where the partition stands, under its sign: a line on it, or why it
@@ -827,7 +742,7 @@ fn data_status(cx: &Ctx, mut c: Canvas, icon: Icon, title: &str, note: Option<&s
     let leave = l.pick(if matches!(cx.state.data, Data::Open | Data::Erased) { ["完成", "完成", "Done"] } else { NOT_NOW });
     c.text_center(&f.heading, leave, x, leave_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), leave_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, back: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
+    Frame { header: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
 }
 
 /// What leaves the decrypt page with the data partition left as it is.
@@ -839,7 +754,7 @@ const DECRYPT_NEEDED: Text = ["需先完成「解密」", "需先完成「解密
 
 /// A user's own files wait on their screen lock: the control it is
 /// answered with, which takes nothing while what was entered is checked.
-fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool, waiting: bool) -> Frame {
+fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let m = &t.m;
     let x = m.w as f32 / 2.0;
@@ -850,23 +765,15 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool, waiting:
         (false, 0) => l.pick(["输入锁屏密码", "輸入螢幕鎖定密碼", "Enter the screen lock"]).to_string(),
         (false, user) => tr!(l, "输入用户 {user} 的锁屏密码", "輸入使用者 {user} 的螢幕鎖定密碼", "Enter user {user}'s screen lock"),
     };
-    let note = l.pick(if waiting {
-        ["正在读取锁屏方式", "正在讀取螢幕鎖定方式", "Reading the screen lock"]
-    } else if checking {
-        ["正在验证", "正在驗證", "Checking"]
-    } else {
-        ["解密后可查看本机文件", "解密後可查看本機檔案", "Decrypt to see the phone's files"]
-    });
-    // Neither a screen lock not yet known nor a code being checked takes keys.
-    let still = checking || waiting;
+    let note = l.pick(if checking { ["正在验证", "正在驗證", "Checking"] } else { ["解密后可查看本机文件", "解密後可查看本機檔案", "Decrypt to see the phone's files"] });
     c.text_center(&f.heading, &title, x, m.dp(130.0), m.dp(24.0), t.pal.text);
     c.text_center(&f.body, note, x, m.dp(166.0), m.sub_px, t.pal.subtitle);
     let mut pattern = None;
     let bottom = match keys {
         Keys::Letters => {
             let top = m.h as f32 - widgets::keyboard_height(t);
-            let caps = widgets::keyboard(&mut c, t, f, l, top, s.layer, s.key_held(), l.pick(DECRYPT), still);
-            if !still {
+            let caps = widgets::keyboard(&mut c, t, f, l, top, s.layer, s.key_held(), l.pick(DECRYPT));
+            if !checking {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
             }
             top
@@ -875,7 +782,7 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool, waiting:
             let span = m.dp(300.0);
             let cy = m.dp(300.0) + span / 2.0;
             widgets::pattern_lock(&mut c, t, x, cy, span, &s.pattern);
-            if !still {
+            if !checking {
                 out.push(Hit { rect: Rect::new(x - span, cy - span, span * 2.0, span * 2.0), action: Action::Pattern });
                 pattern = Some((x, cy, span));
             }
@@ -883,8 +790,8 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool, waiting:
         }
         Keys::Digits => {
             let top = m.h as f32 - widgets::keypad_height(t);
-            let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held(), still);
-            if !still {
+            let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held());
+            if !checking {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
             }
             top
@@ -898,7 +805,7 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool, waiting:
     let skip_cy = bottom - m.dp(34.0);
     c.text_center(&f.heading, l.pick(NOT_NOW), x, skip_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), skip_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, back: false, pattern, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
+    Frame { header: false, pattern, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
 }
 
 /// What a slot is shown as where the boot control could not be read.
@@ -1852,7 +1759,7 @@ pub fn wipe(cx: &Ctx) -> Frame {
 /// is, and its keys as touch targets.
 fn keyboard_hits(c: &mut Canvas, t: &Theme, f: &Fonts, s: &State, enter: &str, out: &mut Vec<Hit>) -> f32 {
     let top = t.m.h as f32 - widgets::keyboard_height(t);
-    let keys = widgets::keyboard(c, t, f, s.lang, top, s.layer, s.key_held(), enter, false);
+    let keys = widgets::keyboard(c, t, f, s.lang, top, s.layer, s.key_held(), enter);
     out.extend(keys.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
     top
 }
@@ -2057,16 +1964,17 @@ pub fn restore_backup(cx: &Ctx) -> Frame {
                 }
                 // The boot partitions' vbmeta checks the system's: one of
                 // another version without the other may not start.
-                if let (Some(was), Some(now)) = (&held.system, &i.os_version) {
-                    if was != now && chosen[0] != chosen[1] {
-                        let warn = tr!(
-                            l,
-                            "该备份来自 {was}，本机当前为 {now}。仅恢复启动分区或系统分区中的一项，可能导致无法开机。",
-                            "這份備份來自 {was}，本機目前為 {now}。僅還原啟動分割區或系統分割區中的一項，可能導致無法開機。",
-                            "This backup is from {was}, and this phone runs {now}. Restoring only one of the boot and system partitions may keep the phone from starting."
-                        );
-                        y = widgets::footnote(&mut c, t, f, y, &warn);
-                    }
+                if let (Some(was), Some(now)) = (&held.system, &i.os_version)
+                    && was != now
+                    && chosen[0] != chosen[1]
+                {
+                    let warn = tr!(
+                        l,
+                        "该备份来自 {was}，本机当前为 {now}。仅恢复启动分区或系统分区中的一项，可能导致无法开机。",
+                        "這份備份來自 {was}，本機目前為 {now}。僅還原啟動分割區或系統分割區中的一項，可能導致無法開機。",
+                        "This backup is from {was}, and this phone runs {now}. Restoring only one of the boot and system partitions may keep the phone from starting."
+                    );
+                    y = widgets::footnote(&mut c, t, f, y, &warn);
                 }
                 let (label, danger) = confirm_label(Confirm::Restore, cx.state);
                 let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
@@ -2300,7 +2208,6 @@ pub fn advanced(cx: &Ctx) -> Frame {
     let tools = widgets::list(&mut c, t, f, top, &[
         Row::new(l.pick(FILES)).icon(BLUE, Icon::Folder),
         Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal),
-        Row::new(l.pick(DISABLE_AVB)).icon(ORANGE, Icon::Shield),
         Row::new(l.pick(RELABEL)).icon(PURPLE, Icon::Shield),
         Row::new(l.pick(FILESYSTEMS)).icon(RED, Icon::Mount),
         Row::new(l.pick(LOGS)).icon(ORANGE, Icon::Log),
@@ -2309,7 +2216,6 @@ pub fn advanced(cx: &Ctx) -> Frame {
     let out = hits(&tools.rows, &[
         Action::Open(Screen::Files),
         Action::Open(Screen::Terminal),
-        Action::Open(Screen::Avb),
         Action::Open(Screen::Relabel),
         Action::Open(Screen::Filesystems),
         Action::Open(Screen::Logs),
@@ -2319,66 +2225,6 @@ pub fn advanced(cx: &Ctx) -> Frame {
 }
 
 const RELABEL: Text = ["修复 SELinux 上下文", "修復 SELinux 上下文", "Fix SELinux contexts"];
-const DISABLE_AVB: Text = ["禁用 AVB", "停用 AVB", "Disable AVB"];
-
-/// The switch selects a dm-verity state; a swipe applies it to all targets.
-pub fn avb(cx: &Ctx) -> Frame {
-    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let mut c = long_page(cx);
-    let mut out = Vec::new();
-    let top = t.m.content_top;
-    let title = l.pick(DISABLE_AVB);
-    let status = match &s.avb {
-        Some(Ok(status)) => status,
-        Some(Err(why)) => {
-            let list = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(["无法读取 AVB 状态", "無法讀取 AVB 狀態", "Couldn't read AVB state"])).trail(Trail::None)]);
-            widgets::footnote(&mut c, t, f, list.bottom, why);
-            return Frame::new(t, c, out, title, top);
-        }
-        None => return Frame::new(t, c, out, title, top),
-    };
-    let enabled = |on| l.pick(if on { ["已启用", "已啟用", "Enabled"] } else { ["已禁用", "已停用", "Disabled"] });
-    let descriptions: Vec<String> = status.partitions.iter().map(|p| {
-        let (verity, verification) = (enabled(p.verity_enabled()), enabled(p.verification_enabled()));
-        tr!(l, "dm-verity {verity} · 启动验证 {verification}", "dm-verity {verity} · 啟動驗證 {verification}", "dm-verity {verity} · boot verification {verification}")
-    }).collect();
-    let rows: Vec<Row> = status.partitions.iter().zip(&descriptions).map(|(p, d)| Row::new(&p.partition).subtitle(d).trail(Trail::None)).collect();
-    let y = widgets::section_first(&mut c, t, f, top, l.pick(["目标分区", "目標分割區", "Target partitions"]));
-    let partitions = widgets::list(&mut c, t, f, y, &rows);
-    let y = widgets::section(&mut c, t, f, partitions.bottom, l.pick(["操作", "操作", "Action"]));
-    let choices = widgets::list(&mut c, t, f, y, &[
-        Row::new(l.pick(if !s.avb_disable_verity {
-            ["禁用 dm-verity", "停用 dm-verity", "Disable dm-verity"]
-        } else {
-            ["启用 dm-verity", "啟用 dm-verity", "Enable dm-verity"]
-        }))
-            .trail(Trail::Switch(s.avb_disable_verity)),
-    ]);
-    out.extend(hits(&choices.rows, &[Action::ToggleAvbVerity]));
-    let mut y = choices.bottom;
-    if let Some(result) = &s.avb_result {
-        let message = match result {
-            Ok(()) => l.pick(if s.avb_disable_verity { ["dm-verity 已禁用。", "dm-verity 已停用。", "dm-verity disabled."] } else { ["dm-verity 已启用。", "dm-verity 已啟用。", "dm-verity enabled."] }).to_string(),
-            Err(why) => tr!(l, "修改失败：{why}", "修改失敗：{why}", "Couldn't change: {why}"),
-        };
-        y = widgets::footnote(&mut c, t, f, y, &message);
-    }
-    let blocked = if !status.unlocked {
-        Some(l.pick(["Bootloader 未解锁或状态未知，无法修改。", "Bootloader 未解鎖或狀態未知，無法修改。", "The bootloader is locked or its state is unknown; changes are unavailable."]))
-    } else if cx.info.snapshot != skyward_vab::SnapshotState::None {
-        Some(l.pick(["系统更新未完成或状态未知，暂不能修改 AVB。", "系統更新未完成或狀態未知，暫不能修改 AVB。", "AVB cannot change while a system update is pending or its state is unknown."]))
-    } else {
-        None
-    };
-    if let Some(why) = blocked {
-        widgets::footnote(&mut c, t, f, y, why);
-    } else if status.partitions.iter().any(|p| p.verity_enabled() == s.avb_disable_verity) {
-        let (label, danger) = confirm_label(Confirm::Avb, s);
-        let track = widgets::confirm(&mut c, t, f, y + t.m.dp(24.0), label, danger, s.confirm);
-        out.push(Hit { rect: track, action: Action::Confirm(Confirm::Avb) });
-    }
-    Frame::new(t, c, out, title, top)
-}
 const FILESYSTEMS: Text = ["文件系统", "檔案系統", "Filesystems"];
 const STOPPED: Text = ["已停止", "已停止", "Stopped"];
 const STOPPING: Text = ["正在停止", "正在停止", "Stopping"];
@@ -2884,7 +2730,8 @@ fn downloaded(l: Lang, progress: Progress, rate: u64) -> (&'static str, String, 
 }
 
 /// Who wrote Skyward, who saw to this build, the agent and the model that
-/// wrote it, and what they cost.
+/// wrote it, and what they cost. Nothing here is asked of a server, so the
+/// page holds no control at all.
 pub fn skyward_update(cx: &Ctx) -> Frame {
     let (t, f, l) = (cx.t, cx.f, cx.state.lang);
     let mut c = long_page(cx);
@@ -2909,6 +2756,7 @@ const CODING_AGENT: Text = ["编码 agent", "編碼 agent", "Coding agent"];
 const BASE_MODEL: Text = ["底层模型", "底層模型", "Base model"];
 const TOKENS_SPENT: Text = ["截至目前版本 消耗超过了一亿词元！", "截至目前版本 消耗超過了一億詞元！", "More than a hundred million tokens spent so far!"];
 const TEN_YUAN: Text = ["改这么些东西可花了我十块钱呢！", "改這麼些東西可花了我十塊錢呢！", "All these changes cost me ten yuan!"];
+
 /// The WLAN switch; then the network chosen and how joining it goes, and
 /// the networks in range, strongest first.
 pub fn wlan(cx: &Ctx) -> Frame {
@@ -2921,32 +2769,12 @@ pub fn wlan(cx: &Ctx) -> Frame {
     let switch = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(WLAN)).trail(Trail::Switch(on))]);
     out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan)]));
     let mut y = switch.bottom;
-    // Where the password typed on a network's page is kept: the persist
-    // partition, which nothing locks and which is there before the data
-    // partition opens, or the data partition, which only opens unlocked.
-    let kept = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(KEEP_ON_DATA)).trail(Trail::Switch(s.wlan_kept))]);
-    out.extend(hits(&kept.rows, &[Action::Toggle(Switch::WlanKept)]));
-    y = kept.bottom;
-    let kept_note = if s.wlan_kept {
-        l.pick([
-            "密码只写进 data 分区，未解密时读不到，更安全；解密之前 Wi-Fi 不会自动连上。",
-            "密碼只寫進 data 分割區，未解密時讀不到，較安全；解密之前 Wi-Fi 不會自動連上。",
-            "The password is written only to the data partition, which stays shut until it is unlocked; until then Wi-Fi won't join on its own.",
-        ])
-    } else {
-        l.pick([
-            "密码写在 persist 分区，每次开机都能直接用；该分区不加密，能读写它的人可以看到密码。",
-            "密碼寫在 persist 分割區，每次開機都能直接用；該分割區不加密，能讀寫它的人可以看到密碼。",
-            "The password is written to the persist partition and works at every start; that partition is not encrypted, so whoever can read it can see the password.",
-        ])
-    };
-    y = widgets::footnote(&mut c, t, f, y, kept_note);
     match &w.power {
         Power::Off => {
             let note = l.pick([
-                "开启后，可连接 WLAN 下载系统更新。",
-                "開啟後，可連接 Wi-Fi 下載系統更新。",
-                "When on, system updates can download over Wi-Fi.",
+                "开启后，可连接 WLAN 下载系统更新和 Skyward 新版本。",
+                "開啟後，可連接 Wi-Fi 下載系統更新和 Skyward 新版本。",
+                "When on, system updates and new versions of Skyward can download over Wi-Fi.",
             ]);
             y = widgets::footnote(&mut c, t, f, y, note)
         }
@@ -2973,10 +2801,10 @@ pub fn wlan(cx: &Ctx) -> Frame {
                 out.extend(hits(&joined.rows, &[Action::OpenJoined]));
                 out.push(Hit { rect: widgets::round_button(t, joined.rows[0]), action: Action::OpenJoined });
                 y = joined.bottom;
-                if let Joining::Connected(link) = &j.stage {
-                    if let Some(note) = link.reach.as_ref().and_then(|r| fmt::reach(l, r)) {
-                        y = widgets::footnote(&mut c, t, f, y, &note);
-                    }
+                if let Joining::Connected(link) = &j.stage
+                    && let Some(note) = link.reach.as_ref().and_then(|r| fmt::reach(l, r))
+                {
+                    y = widgets::footnote(&mut c, t, f, y, &note);
                 }
             }
             let others: Vec<(usize, &Network)> =
@@ -3020,7 +2848,6 @@ pub fn wlan(cx: &Ctx) -> Frame {
 }
 
 const ADD_NETWORK: Text = ["添加网络", "新增網路", "Add network"];
-const KEEP_ON_DATA: Text = ["密码存在 data 分区", "密碼存在 data 分割區", "Keep password on data"];
 const SHOW_PASSWORD: Text = ["显示密码", "顯示密碼", "Show password"];
 const CONNECT_KEY: Text = ["连接", "連線", "Connect"];
 const SECURITY: Text = ["安全性", "安全性", "Security"];
@@ -3773,11 +3600,13 @@ pub fn systems(cx: &Ctx) -> Frame {
     let starts = starting(systems);
     let chosen = s.system_pick.unwrap_or(starts);
     let second_role = l.pick(SECOND_SYSTEM);
+    // Boot partitions that hold a second system's image nothing is kept of
+    // start neither system the page knows.
     let main = SystemCard {
         role: l.pick(MAIN_SYSTEM),
         name: &systems.installed.name,
         detail: systems.installed.version.as_deref().unwrap_or_default(),
-        mark: SystemMark::Check(chosen == Who::Installed),
+        mark: SystemMark::Check(chosen == Who::Installed && systems.held != Held::Unrecorded),
     };
     let second = match &systems.other {
         Some(other) => SystemCard { role: second_role, name: &other.name, detail: &other.version, mark: SystemMark::Check(chosen == Who::Other) },
@@ -3816,6 +3645,25 @@ pub fn systems(cx: &Ctx) -> Frame {
         "Tap a card to pick a system. Switching rewrites only the boot and init_boot partitions of the slot that starts next, and leaves the main system's other partitions as they are. The second system's files are kept in the data partition.",
     ]);
     y = widgets::footnote(&mut c, t, f, y, what);
+    match systems.held {
+        Held::Recorded => {}
+        Held::Rewritten => {
+            let note = l.pick([
+                "Skyward 写入第二系统的启动镜像之后，启动分区被改写过。选择主系统并滑动确认，会用保存的主系统启动镜像覆盖现在的内容；在此之前，安装、清除和备份都不会进行。",
+                "Skyward 寫入第二系統的啟動映像檔之後，啟動分割區被改寫過。選擇主系統並滑動確認，會用儲存的主系統啟動映像檔覆蓋現在的內容；在此之前，安裝、清除和備份都不會進行。",
+                "Something else has written the boot partitions since Skyward put the second system's boot images there. Picking the main system and sliding to confirm writes the main system's saved boot images over what is there now; until then, nothing is installed, wiped or backed up.",
+            ]);
+            y = widgets::footnote(&mut c, t, f, y, note);
+        }
+        Held::Unrecorded => {
+            let note = l.pick([
+                "启动分区里是第二系统的启动镜像，Skyward 保存的记录已经不存在，无法写回主系统的启动镜像。请重新刷入主系统的 boot 和 init_boot 镜像。",
+                "啟動分割區裡是第二系統的啟動映像檔，Skyward 儲存的記錄已經不存在，無法寫回主系統的啟動映像檔。請重新刷入主系統的 boot 和 init_boot 映像檔。",
+                "The boot partitions hold a second system's boot images, and what Skyward kept of them is gone, so it can't put the main system's back. Flash the main system's boot and init_boot images again.",
+            ]);
+            y = widgets::footnote(&mut c, t, f, y, note);
+        }
+    }
     if systems.other.is_some() && systems.changed {
         let note = l.pick([
             "安装第二系统后，主系统的 vendor_boot 或 dtbo 分区已改变，第二系统可能无法正常启动。",

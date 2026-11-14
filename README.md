@@ -14,19 +14,67 @@ Skyward is a recovery written in Rust, from scratch.
 
 ## Features
 
-- Decrypt the data partition
-- Install zips, system update packages and partition images, from internal storage, a USB drive or adb sideload
-- `7za` and `zstd` for install scripts, which ROMs with a super image compressed by zstd use to flash it, and an `unzip` whose `-p` streams the image as it reads it
-- `avbctl` and `resetprop` for install scripts, to turn off verified boot's checks and to read and set properties
-- Online system updates
-- Backup and restore
-- Wipe data and factory reset
-- Mount partitions, repair and format filesystems
-- File manager and terminal
-- WLAN
-- MTP file transfer, adb and fastbootd
+### Decryption
+
+![Decrypt data with the screen lock](slides/en/out/03-decrypt.png)
+
+### Installing
+
+![Four kinds of packages from three places](slides/en/out/04-install.png)
+
+Install scripts get `7za` and `zstd`, which ROMs with a super image compressed by
+zstd use to flash it, and an `unzip` whose `-p` streams the image as it reads it.
+They also get `avbctl` and `resetprop`, to turn off verified boot's checks and to
+read and set properties.
+
+### Online updates
+
+![Update the system online](slides/en/out/05-updates.png)
+
+### Backup and restore
+
+![Back up the system, apps and IMEI](slides/en/out/06-backup.png)
+
+### File manager
+
+![Manage the phone's files in Skyward](slides/en/out/07-files.png)
+
+### Terminal
+
+![Run a root shell right on the phone](slides/en/out/08-terminal.png)
+
+### Connecting a computer
+
+![Move files and flash partitions over USB](slides/en/out/09-computer.png)
+
+### Wiping data
+
+![Every choice says what it wipes](slides/en/out/10-wipe.png)
+
+### Replacing the stock recovery
+
+![Skyward does what the system asks](slides/en/out/11-requests.png)
+
+### Search
+
+![Type a few letters to find a feature](slides/en/out/12-search.png)
+
+### Advanced
+
+![When something breaks, fix it here first](slides/en/out/13-tools.png)
+
+### About phone
+
+![Check battery health and charge cycles](slides/en/out/14-specs.png)
+
+### Other features
+
 - Reboot to system, recovery, fastboot, bootloader or EDL, and switch slots
 - Light and dark themes; Simplified Chinese, Traditional Chinese and English
+
+### Without a system
+
+![Skyward starts even without a system](slides/en/out/15-no-system.png)
 
 ## Supported devices
 
@@ -38,8 +86,11 @@ Skyward is a recovery written in Rust, from scratch.
 ### 🚧 Under construction
 
 These images are built from each phone's stock firmware and have not been tried
-on the phone. They set up the screen, touch, WLAN and vibration, and do not decrypt
-the data partition.
+on the phone. They set up the screen, touch, Wi-Fi and vibration. The programs that
+decrypting the data partition takes are read on the phone from the installed
+system's own init scripts and service descriptions; what is read has been checked
+against each model's stock firmware, and how those programs run on these models has
+not been verified.
 
 | Device | Codename | Built on |
 | --- | --- | --- |
@@ -63,7 +114,7 @@ the data partition.
 | 🚧 REDMI K100 Pro | `athens` | OS4.0.4.0.XPICNXM (Android 17) |
 | 🚧 REDMI K100 Pro Max | `songyuan` | OS4.0.4.0.XGNCNXM (Android 17) |
 
-## Installing
+## Installing Skyward
 
 Skyward needs an unlocked bootloader. Download the zip for your phone from
 [Releases](https://github.com/kirklin/skyward/releases), where each shows as the
@@ -72,26 +123,21 @@ phone's model and codename, such as Xiaomi 17 Ultra (nezha). Check it against
 the slot the phone runs from, with the phone in fastboot mode:
 
 ```sh
-unzip skyward-v0.1.6-nezha-OS4.0.4.0.XPACNXM.zip
-fastboot flash recovery skyward-v0.1.6-nezha-OS4.0.4.0.XPACNXM.img
+unzip skyward-v0.3.1-nezha-OS4.0.4.0.XPACNXM.zip
+fastboot flash recovery skyward-v0.3.1-nezha-OS4.0.4.0.XPACNXM.img
 fastboot reboot recovery
 ```
 
-Afterwards a newer release installs from Skyward's own Install page: download
-the zip from Releases, unzip it, and pick its image there. With **Flash Skyward
-again** on, a system update or zip that writes over the recovery partitions gets
-Skyward back in them.
-
-Without a system in super, Skyward still starts, with its screen and keys, adb,
-`adb sideload` and fastbootd, enough to install one. Touch, WLAN and decryption run
-from the installed system and come back with it.
+A newer image, unzipped, also installs from Skyward's own Install page. With
+**Flash Skyward again** on, a system update or zip that writes over the recovery
+partitions gets Skyward back in them.
 
 adb in Skyward is a root shell that needs no authorization on the phone: anyone
 with the phone and a cable can reach its storage while it is in recovery.
 
 ## Building
 
-Skyward builds with the stable Rust that `rust-toolchain.toml` names, with its
+Skyward builds with the version of Rust that `rust-toolchain.toml` names, with its
 `aarch64-linux-android` target, the Android NDK r29 and
 [cargo-ndk](https://github.com/bbqsrc/cargo-ndk). The recovery service is built for
 the phone, and the packer for the computer:
@@ -99,6 +145,13 @@ the phone, and the packer for the computer:
 ```sh
 cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
 cargo build --release -p skyward-pack
+```
+
+The second system's first program runs before any library is there to load, so it
+is built as a static program:
+
+```sh
+RUSTFLAGS="-C target-feature=+crt-static" cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init --target-dir target/system-init
 ```
 
 The packer takes the stock recovery partition out of the build's full update
@@ -115,6 +168,7 @@ Then it builds the image on top of it:
 target/release/skyward-pack recovery \
   --stock target/stock/nezha/recovery.img \
   --binary target/aarch64-linux-android/release/skyward \
+  --system-init target/system-init/aarch64-linux-android/release/system-init \
   --config devices/nezha.toml \
   --font resources/fonts/MiSansVF.ttf \
   --mono resources/fonts/KirkMono-Regular.ttf \
@@ -127,7 +181,16 @@ Tests and lints run on the computer; what runs only on the phone is linted for i
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo ndk -t arm64-v8a --platform 30 clippy -p skyward -p skyward-install -- -D warnings
+cargo ndk -t arm64-v8a --platform 30 clippy --workspace --all-targets -- -D warnings
+```
+
+The tests whose names start with `on_the_phone` make filesystems, mount them and
+set encryption keys, which only a phone does. With a phone in Skyward attached over
+adb, its data partition open, `cargo ndk` pushes each test program to the phone and
+runs it there, one test at a time:
+
+```sh
+cargo ndk -t arm64-v8a --platform 30 test -p skyward -p skyward-block -p skyward-files -p skyward-mtp on_the_phone -- --test-threads=1
 ```
 
 `skyward-preview` draws the pages on the computer, as PNG files, without a phone:
