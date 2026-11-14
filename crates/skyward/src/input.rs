@@ -307,6 +307,22 @@ impl Inputs {
         self.panel.is_some()
     }
 
+    /// Tell the touchscreen again what the device description writes to it.
+    /// A controller that lost power while the panel was off comes back from
+    /// its reset sending raw frames, which a recovery draws none of, so the
+    /// switch that has it report positions is told again whenever the panel
+    /// lights up.
+    pub fn retell(&mut self) -> Result<()> {
+        if self.panel.is_none() {
+            return Ok(());
+        }
+        for w in &self.touch_writes {
+            fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
+        }
+        let _ = skyward_sys::kmsg("told the touchscreen again how to report positions");
+        Ok(())
+    }
+
     /// Readable while a device has something queued, or /dev/input changed.
     pub fn fd(&self) -> RawFd {
         self.wakeful.fd()

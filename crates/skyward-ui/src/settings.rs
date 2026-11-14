@@ -49,6 +49,9 @@ pub struct Settings {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// The Wi-Fi password is kept on the data partition, which only opens
+    /// once it is unlocked, rather than on the persist partition.
+    pub wlan_kept: bool,
     /// A dark panel keeps the clock and the phone's readings on the glass in
     /// the panel's own doze, rather than being put out.
     pub always_on: bool,
@@ -132,6 +135,7 @@ impl Settings {
             vibrate: state.vibrate,
             vibration: state.vibration,
             file_transfer: state.file_transfer,
+            wlan_kept: state.wlan_kept,
             always_on: state.always_on,
             double_tap: Some(state.double_tap),
             install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery },
@@ -192,6 +196,7 @@ impl Settings {
             state.vibration = self.vibration;
         }
         state.file_transfer = self.file_transfer;
+        state.wlan_kept = self.wlan_kept;
         state.always_on = self.always_on;
         if let Some(on) = self.double_tap {
             state.double_tap = on && state.double_taps;

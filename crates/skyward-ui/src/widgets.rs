@@ -1940,8 +1940,11 @@ pub fn keypad_height(t: &Theme) -> f32 {
 /// The keypad a screen lock's code is typed on, its top at `top`: four rows
 /// of three round keys, `pressed` drawn held down, and the last row erasing
 /// and confirming, in `l`. Returns where each key answers a touch.
-pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>) -> Vec<(Rect, Cap)> {
+pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>, dim: bool) -> Vec<(Rect, Cap)> {
     let m = &t.m;
+    // While the recovery is still working out which screen lock to read the
+    // keys are drawn faded: they are there, but they answer nothing yet.
+    let fade = |color: Rgba| if dim { mix(color, t.pal.bg, 0.66) } else { color };
     let (size, gx, gy) = (m.dp(PAD_KEY_DP), m.dp(PAD_GAP_X_DP), m.dp(PAD_GAP_Y_DP));
     let left = (m.w as f32 - (3.0 * size + 2.0 * gx)) / 2.0;
     let mut keys = Vec::with_capacity(PAD_KEYS.len());
@@ -1956,18 +1959,18 @@ pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: 
         // page rather than on a key of their own.
         let bare = matches!(cap, Cap::Backspace | Cap::Enter);
         let base = match cap {
-            Cap::Enter => t.pal.accent,
-            _ if bare => t.pal.bg,
-            _ => t.pal.card,
+            Cap::Enter => fade(t.pal.accent),
+            _ if bare => fade(t.pal.bg),
+            _ => fade(t.pal.card),
         };
         let fill = if pressed == Some(cap) { mix(base, t.pal.text, 0.16) } else { base };
         if !bare || cap == Cap::Enter {
             c.fill_circle(cx, cy, r.w / 2.0, fill);
         }
         match cap {
-            Cap::Char(ch) => c.text_center(&f.heading, &ch.to_string(), cx, cy, m.dp(34.0), t.pal.text),
-            Cap::Backspace => c.text_center(&f.body, l.pick(["删除", "刪除", "Delete"]), cx, cy, m.row_title_px, t.pal.accent),
-            _ => c.text_center(&f.heading, l.pick(["解密", "解密", "Decrypt"]), cx, cy, m.row_title_px, Rgba::rgb(255, 255, 255)),
+            Cap::Char(ch) => c.text_center(&f.heading, &ch.to_string(), cx, cy, m.dp(34.0), fade(t.pal.text)),
+            Cap::Backspace => c.text_center(&f.body, l.pick(["删除", "刪除", "Delete"]), cx, cy, m.row_title_px, fade(t.pal.accent)),
+            _ => c.text_center(&f.heading, l.pick(["解密", "解密", "Decrypt"]), cx, cy, m.row_title_px, fade(Rgba::rgb(255, 255, 255))),
         }
     }
     keys
@@ -2662,14 +2665,18 @@ pub fn keyboard_height(t: &Theme) -> f32 {
 /// key answers a touch, the gaps between keys shared out among their
 /// neighbours.
 #[allow(clippy::too_many_arguments)]
-pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str) -> Vec<(Rect, Cap)> {
+pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str, dim: bool) -> Vec<(Rect, Cap)> {
     let m = &t.m;
     let w = m.w as f32;
+    // Faded while the recovery still works out which screen lock to read.
+    let fade = |color: Rgba| if dim { mix(color, t.pal.bg, 0.7) } else { color };
     let (panel, key, side, ink, shadow) = if t.dark {
         (Rgba::rgb(18, 18, 18), Rgba::rgb(58, 58, 58), Rgba::rgb(38, 38, 38), Rgba::rgb(237, 237, 237), Rgba::rgb(0, 0, 0))
     } else {
         (Rgba::rgb(224, 226, 231), Rgba::rgb(255, 255, 255), Rgba::rgb(193, 198, 207), Rgba::rgb(0, 0, 0), Rgba::rgb(138, 141, 147))
     };
+    let (panel, key, side, ink, shadow, enter_ink) =
+        (fade(panel), fade(key), fade(side), fade(ink), fade(shadow), fade(Rgba::rgb(255, 255, 255)));
     c.fill_rect(0.0, top, w, keyboard_height(t), panel);
     let (pad, gx, gy, kh) = (m.dp(KEYBOARD_PAD_X_DP), m.dp(KEY_GAP_X_DP), m.dp(KEY_GAP_Y_DP), m.dp(KEY_H_DP));
     let kw = (w - pad * 2.0 - gx * 9.0) / 10.0;
@@ -2720,7 +2727,7 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
     for &(r, cap) in &keys {
         let plain = matches!(cap, Cap::Char(_) | Cap::Space);
         let base = match cap {
-            Cap::Enter => t.pal.accent,
+            Cap::Enter => fade(t.pal.accent),
             Cap::Shift if layer == Layer::Shifted => key,
             _ if plain => key,
             _ => side,
@@ -2737,7 +2744,7 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
                 c.text_center(&f.heading, &label.to_string(), cx, cy, glyph_px, ink);
             }
             Cap::Space => c.text_center(&f.body, l.pick(["空格", "空格", "Space"]), cx, cy, m.sub_px, ink),
-            Cap::Enter => c.text_center(&f.heading, enter, cx, cy, m.sub_px, Rgba::rgb(255, 255, 255)),
+            Cap::Enter => c.text_center(&f.heading, enter, cx, cy, m.sub_px, enter_ink),
             Cap::Show(Layer::Digits) => c.text_center(&f.heading, "123", cx, cy, m.sub_px, ink),
             Cap::Show(Layer::Symbols) => c.text_center(&f.heading, "#+=", cx, cy, m.sub_px, ink),
             Cap::Show(_) => c.text_center(&f.heading, "abc", cx, cy, m.sub_px, ink),

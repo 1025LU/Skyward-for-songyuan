@@ -14,6 +14,11 @@ use std::time::{Duration, Instant};
 const BATTERY_EVERY: Duration = Duration::from_secs(1);
 const ALL_EVERY: u32 = 30;
 
+/// While /data is not mounted the readings are taken every tick for this
+/// many ticks, so the moment its files open is caught at once; the screen
+/// then shows how much room is free without waiting for a full reading.
+const DATA_WAIT: u32 = 60;
+
 pub enum Reading {
     /// The battery, and when reading it started.
     Battery(Result<Option<Battery>>, Instant),
@@ -44,6 +49,12 @@ impl Readings {
             .name("readings".into())
             .spawn(move || {
                 let mut ticks = 0u32;
+                // The first reading is taken at once rather than a second
+                // from now, and while /data is still closed they are taken
+                // every tick: the screen then shows how much room is free the
+                // moment the files open.
+                let mut first = true;
+                let mut waiting_for_data = true;
                 loop {
                     let at_once = match asked.recv_timeout(BATTERY_EVERY) {
                         Ok(()) => {
@@ -57,8 +68,16 @@ impl Readings {
                         ticks += 1;
                     }
                     let at = Instant::now();
-                    let reading = if !at_once && ticks.is_multiple_of(ALL_EVERY) {
-                        Reading::All(Box::new(skyward_info::collect(&cfg)), at)
+                    let all = first
+                        || (!at_once
+                            && (ticks.is_multiple_of(ALL_EVERY) || (waiting_for_data && ticks <= DATA_WAIT)));
+                    first = false;
+                    let reading = if all {
+                        let read = skyward_info::collect(&cfg);
+                        if matches!(&read, Ok(info) if info.storage.free.is_some()) {
+                            waiting_for_data = false;
+                        }
+                        Reading::All(Box::new(read), at)
                     } else {
                         Reading::Battery(skyward_info::battery_now(), at)
                     };

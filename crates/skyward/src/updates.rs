@@ -1,17 +1,12 @@
 //! Asking the phone maker's update server for the newest system and
-//! downloading its full package; and asking GitHub for Skyward's newest
-//! release, downloading its build for the phone and writing it into the
-//! recovery partitions: on a thread of their own that tells the screen how
-//! far they have come.
+//! downloading its full package: on a thread of their own that tells the
+//! screen how far it has come.
 
 use anyhow::{Context, Result};
-use skyward_install::upgrade;
 use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused, Sum};
-use skyward_net::github::{self, Build, Newest};
 use skyward_net::http::{self, Servers};
 use skyward_net::reach::{self, Reach};
 use skyward_net::release::{self, Installed, Release, Unanswered};
-use skyward_vab::Slot;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,42 +34,20 @@ pub enum Task {
     /// Download `release`'s full package to `path`; `server` is asked again
     /// for where it is when the addresses it gave have run out.
     Download { server: String, installed: Installed, release: Release, path: PathBuf },
-    /// Ask GitHub for Skyward's newest release and its zip for the phone
-    /// `codename` names; where that fails, `probe` says whether the network
-    /// is why.
-    CheckSkyward { probe: String, codename: String },
-    /// Download `build` to `path`, check that its image is Skyward for the
-    /// phone `codename` names, and write the image into the recovery
-    /// partitions of the slot that starts next and of any other slot that
-    /// holds Skyward.
-    UpdateSkyward { build: Build, codename: String, path: PathBuf },
 }
 
 pub enum Event {
     Checked(Result<Option<Release>, Unanswered>),
-    /// What GitHub answered of Skyward's newest release.
-    SkywardChecked(Result<Newest, Unanswered>),
     /// How far the download has come, and how fast it goes, in bytes a
     /// second.
     Progress(Progress, u64),
-    /// Skyward's build is written into the recovery partitions and read
-    /// back: bytes so far, of all.
-    Writing { done: u64, total: u64 },
     Ended(End),
 }
 
 pub enum End {
     Downloaded,
-    /// Skyward's build is in the recovery partitions of these slots.
-    Updated(Vec<Slot>),
     Stopped,
     Failed(Failure),
-    /// Skyward's build could not go in, or where it goes could not be told:
-    /// why. Nothing was written.
-    NotWritten(String),
-    /// Writing Skyward's build into the recovery partitions of these slots
-    /// failed, after some of it was written: why.
-    WriteFailed(Vec<Slot>, String),
 }
 
 pub struct Worker {
@@ -146,56 +119,6 @@ impl Worker {
                         };
                         let sum = Sum::Md5(release.md5.clone());
                         let end = fetch(&servers, release.urls.clone(), &sum, &release.name, &path, &stopping, &using, &tell, &mut refused);
-                        tell(Event::Ended(end));
-                    }
-                    Task::CheckSkyward { probe, codename } => {
-                        let a = http::agent(servers.clone());
-                        *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                        let answer = github::ask(&a, &codename, skyward_info::VERSION).map_err(|e| unanswered(&e, github::LATEST, &probe, &servers));
-                        tell(Event::SkywardChecked(answer));
-                    }
-                    // GitHub's API hands the zip out at a short-lived address
-                    // of the file itself, which it gives again once one has
-                    // run out and is turned down; the release's link on
-                    // github.com is tried after it.
-                    Task::UpdateSkyward { build, codename, path } => {
-                        let a = http::agent(servers.clone());
-                        *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                        let located = github::locate(&a, &build.url, skyward_info::VERSION)
-                            .inspect_err(|e| {
-                                let _ = skyward_sys::kmsg(&format!("asking GitHub where {} is: {e:#}", build.name));
-                            })
-                            .ok();
-                        let mut located_again = false;
-                        let mut refused = |a: &ureq::Agent| {
-                            if located_again {
-                                return Again::Retry;
-                            }
-                            located_again = true;
-                            match github::locate(a, &build.url, skyward_info::VERSION) {
-                                Ok(fresh) => Again::From(build.sources(Some(fresh))),
-                                Err(e) => {
-                                    let _ = skyward_sys::kmsg(&format!("asking GitHub again where {} is: {e:#}", build.name));
-                                    Again::Retry
-                                }
-                            }
-                        };
-                        let sum = Sum::Sha256(build.sha256.clone());
-                        let end = match fetch(&servers, build.sources(located), &sum, &build.name, &path, &stopping, &using, &tell, &mut refused) {
-                            // Stopping asked for as the last of it came is
-                            // stopping still: nothing is written.
-                            End::Downloaded if stopping.load(Ordering::Relaxed) => End::Stopped,
-                            End::Downloaded => write(&path, &codename, &tell),
-                            other => other,
-                        };
-                        // The zip is held in memory, and is done with once
-                        // whole; a part stays, to go on from.
-                        match std::fs::remove_file(&path) {
-                            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                                let _ = skyward_sys::kmsg(&format!("delete {}: {e}", path.display()));
-                            }
-                            _ => {}
-                        }
                         tell(Event::Ended(end));
                     }
                 }
@@ -348,39 +271,6 @@ fn fetch(
             }
             thread::sleep(Duration::from_millis(100));
         }
-    }
-}
-
-/// Write the image in the zip at `path`, once it is Skyward for the phone
-/// `codename` names, into the recovery partitions of the slot that starts
-/// next and of any other slot that holds Skyward, telling how far that has
-/// come.
-fn write(path: &Path, codename: &str, tell: &dyn Fn(Event)) -> End {
-    let dir = Path::new(skyward_block::BY_NAME);
-    let ready = || -> Result<(Vec<u8>, Vec<Slot>)> {
-        let image = upgrade::unzip(path)?;
-        upgrade::check(&image, codename)?;
-        let next = skyward_vab::boot::next_slot().context("ask which slot starts next")?;
-        Ok((image, upgrade::slots(dir, next)?))
-    };
-    let (image, slots) = match ready() {
-        Ok(ready) => ready,
-        Err(e) => return End::NotWritten(format!("{e:#}")),
-    };
-    let mut told: Option<Instant> = None;
-    let written = upgrade::write(dir, &image, &slots, &mut |done, total| {
-        if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
-            tell(Event::Writing { done, total });
-            told = Some(Instant::now());
-        }
-    });
-    let _ = skyward_sys::kmsg(&format!("Skyward's build written to {slots:?}: {written:?}"));
-    match written {
-        Ok(()) => End::Updated(slots),
-        // The first part written is told at once, so nothing told is
-        // nothing written.
-        Err(e) if told.is_none() => End::NotWritten(format!("{e:#}")),
-        Err(e) => End::WriteFailed(slots, format!("{e:#}")),
     }
 }
 

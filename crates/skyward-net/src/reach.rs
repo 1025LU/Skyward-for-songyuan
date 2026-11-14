@@ -43,9 +43,69 @@ impl std::fmt::Display for Reach {
 /// Ask `page`, a plain HTTP address, looking its host up in `servers`.
 pub fn probe(page: &str, servers: &[Ipv4Addr]) -> Reach {
     match answer(page, servers) {
-        Ok((code, location)) => judge(page, code, location),
+        Ok((code, location, _)) => judge(page, code, location),
         Err(e) => Reach::Offline(format!("{e:#}")),
     }
+}
+
+/// The time `page` says it is, in Unix milliseconds, from the `Date`
+/// header of its answer: the one source of the real time a recovery has
+/// when the real-time clock and the time daemon's offset hold nothing.
+pub fn time(page: &str, servers: &[Ipv4Addr]) -> Result<u64> {
+    let (_, _, date) = answer(page, servers)?;
+    match date {
+        Some(ms) => Ok(ms),
+        None => bail!("{page} answered with no Date header"),
+    }
+}
+
+/// The Unix milliseconds an HTTP `Date` header names, as servers write it:
+/// `Mon, 09 Nov 2026 08:13:51 GMT`. The weekday is not looked at.
+fn when(held: &[u8]) -> Option<u64> {
+    let text = std::str::from_utf8(held).ok()?;
+    let mut parts = text.split_whitespace();
+    let _weekday = parts.next()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = match parts.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = parts.next()?.parse().ok()?;
+    let mut clock = parts.next()?.split(':');
+    let hour: i64 = clock.next()?.parse().ok()?;
+    let minute: i64 = clock.next()?.parse().ok()?;
+    let second: i64 = clock.next()?.parse().ok()?;
+    let zone = parts.next()?;
+    if !zone.eq_ignore_ascii_case("GMT") {
+        return None;
+    }
+    if !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 || year < 1970 {
+        return None;
+    }
+    let seconds = days_from_epoch(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second;
+    u64::try_from(seconds).ok().map(|s| s * 1_000)
+}
+
+/// The days from 1970-01-01 to the day named, by Howard Hinnant's count.
+fn days_from_epoch(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// How far a network reaches, by what `page` answered: 204 is the page
@@ -60,7 +120,7 @@ fn judge(page: &str, code: u16, location: Option<String>) -> Reach {
 }
 
 /// What `page` answers: its status, and where it sends on to.
-fn answer(page: &str, servers: &[Ipv4Addr]) -> Result<(u16, Option<String>)> {
+fn answer(page: &str, servers: &[Ipv4Addr]) -> Result<(u16, Option<String>, Option<u64>)> {
     let uri: Uri = page.parse().with_context(|| format!("{page} is not an address"))?;
     let (host, authority) = match (uri.host(), uri.authority()) {
         (Some(host), Some(authority)) => (host, authority.as_str()),
@@ -84,7 +144,7 @@ fn answer(page: &str, servers: &[Ipv4Addr]) -> Result<(u16, Option<String>)> {
 /// names are spelled as browsers spell them, Host with a capital, and the
 /// HTTP client the rest of the recovery uses writes every name in small
 /// letters, so the request is written here as a browser writes it.
-fn ask(mut stream: TcpStream, authority: &str, path: &str) -> Result<(u16, Option<String>)> {
+fn ask(mut stream: TcpStream, authority: &str, path: &str) -> Result<(u16, Option<String>, Option<u64>)> {
     stream.set_read_timeout(Some(WAIT)).context("time the connection")?;
     stream.set_write_timeout(Some(WAIT)).context("time the connection")?;
     stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n").as_bytes()).context("send the request")?;
@@ -103,7 +163,8 @@ fn ask(mut stream: TcpStream, authority: &str, path: &str) -> Result<(u16, Optio
         if response.parse(&head).context("read the head of the answer")?.is_complete() {
             let code = response.code.context("the answer has no status")?;
             let location = response.headers.iter().find(|h| h.name.eq_ignore_ascii_case("location")).map(|h| String::from_utf8_lossy(h.value).into_owned());
-            return Ok((code, location));
+            let date = response.headers.iter().find(|h| h.name.eq_ignore_ascii_case("date")).and_then(|h| when(h.value));
+            return Ok((code, location, date));
         }
         ensure!(head.len() < HEAD, "the head of the answer runs past {HEAD} bytes");
     }
@@ -114,6 +175,18 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn the_date_of_an_answer_names_the_time() {
+        // Mon, 09 Nov 2026 08:13:51 GMT is 1_794_212_031 seconds after 1970
+        // began, and the recovery counts time in milliseconds.
+        assert_eq!(when(b"Mon, 09 Nov 2026 08:13:51 GMT"), Some(1_794_212_031_000));
+        // A leap day, the day the count has to get right.
+        assert_eq!(when(b"Thu, 29 Feb 2024 00:00:00 GMT"), Some(1_709_164_800_000));
+        // Anything else is no time at all.
+        assert_eq!(when(b"Mon, 09 Nov 2026 08:13:51"), None);
+        assert_eq!(when(b"09 Nov 2026 08:13:51 GMT"), None);
+    }
 
     /// A server on the loopback answering one request with `answer`, and
     /// only a request that spells its Host header as browsers do, as some

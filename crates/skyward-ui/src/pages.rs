@@ -1,7 +1,7 @@
 use crate::app::{
     Action, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field, FileKind,
     FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows, Screen,
-    SkywardCheck, SkywardEnd, SkywardJob, SkywardStage, Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
+    Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
     BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE,
     USB_DRIVE_WANTED, WIPES, installs, starting,
 };
@@ -148,10 +148,6 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
 pub const HOME_TITLE: &str = "Skyward";
 pub const SEARCH_HINT: Text = ["搜索功能与分区", "搜尋功能與分割區", "Search features and partitions"];
 
-/// Captions under the readings on the home card's strip.
-const DATA_STATE: Text = ["数据分区", "資料分割區", "Data partition"];
-const FREE_SPACE: Text = ["可用空间", "可用空間", "Free space"];
-
 const REBOOT_TARGETS: [(Text, Option<Text>); 6] = [
     (["系统", "系統", "System"], None),
     (["恢复模式", "復原模式", "Recovery"], None),
@@ -174,7 +170,7 @@ const LOGS: Text = ["导出日志", "匯出記錄", "Export logs"];
 const SCREEN_TIMEOUT: Text = ["息屏时间", "螢幕自動關閉", "Screen timeout"];
 const ALWAYS_ON: Text = ["息屏显示", "螢幕關閉顯示", "Always-on display"];
 const UPDATE: Text = ["系统更新", "系統更新", "System update"];
-const SKYWARD_UPDATE: Text = ["Skyward 更新", "Skyward 更新", "Skyward update"];
+const SKYWARD_UPDATE: Text = ["关于 Skyward", "關於 Skyward", "About Skyward"];
 const FILES: Text = ["文件管理", "檔案管理", "File manager"];
 const TERMINAL: Text = ["终端", "終端機", "Terminal"];
 const LANGUAGE: Text = ["语言", "語言", "Language"];
@@ -266,25 +262,11 @@ pub fn home(cx: &Ctx) -> Frame {
         rows.push(Row::new(l.pick(SECOND_FAILED)).icon(RED, Icon::Systems).subtitle(why).trail(Trail::Arrow));
         opens.push(Some(Action::Open(Screen::Systems)));
     }
-    // The strip of readings under the phone's name: the slot the recovery
-    // runs from, the data partition's lock, the room left on it and the
-    // battery's level, each as the stock settings home shows them.
-    let stats = [
-        widgets::Stat {
-            value: i.slot.map(|s| s.letter().to_string()).unwrap_or_else(|| l.pick(["未知", "不明", "Unknown"]).to_string()),
-            caption: l.pick(CURRENT_SLOT),
-        },
-        widgets::Stat { value: fmt::data(l, &cx.state.data).to_string(), caption: l.pick(DATA_STATE) },
-        widgets::Stat {
-            value: i.storage.free.map(fmt::bytes).unwrap_or_else(|| l.pick(["未知", "不明", "Unknown"]).to_string()),
-            caption: l.pick(FREE_SPACE),
-        },
-        widgets::Stat {
-            value: i.battery.as_ref().map(|b| format!("{}%", b.level)).unwrap_or_else(|| l.pick(["未知", "不明", "Unknown"]).to_string()),
-            caption: i.battery.as_ref().map(|b| fmt::charge(l, b.charge)).unwrap_or_else(|| l.pick(["无电池", "無電池", "No battery"])),
-        },
-    ];
-    let card = widgets::device_card(&mut c, t, f, y, &i.model, &sub, &stats, &rows);
+    // The card holds the name and the build and nothing else: the strip of
+    // readings that used to sit under them (the slot, the data partition,
+    // the room left, the battery) is gone from this page. Only rows that ask
+    // for something to be done stay.
+    let card = widgets::device_card(&mut c, t, f, y, &i.model, &sub, &[], &rows);
     out.push(Hit { rect: card.rows[0], action: Action::Open(Screen::About) });
     out.extend(card.rows[1..].iter().zip(&opens).filter_map(|(&rect, open)| open.map(|action| Hit { rect, action })));
     y = card.bottom + t.m.card_gap;
@@ -311,20 +293,29 @@ pub fn home(cx: &Ctx) -> Frame {
         out.extend(hits(&first.rows, &opens));
         y = first.bottom + t.m.card_gap;
     }
-    let tools = widgets::list(&mut c, t, f, y, &[
+    // Decrypting leads back to the screen lock, and is a tool only while
+    // there is still something to open: once the files are open the row goes
+    // whole, with nothing left to lead to.
+    let mut rows = vec![
         Row::new(l.pick(["安装", "安裝", "Install"])).icon(GREEN, Icon::Install),
         Row::new(l.pick(["备份", "備份", "Backup"])).icon(BLUE, Icon::Backup),
         Row::new(l.pick(["恢复", "還原", "Restore"])).icon(PURPLE, Icon::Restore),
         Row::new(l.pick(["挂载", "掛載", "Mount"])).icon(SLATE, Icon::Mount),
-        Row::new(l.pick(DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
-    ]);
-    out.extend(hits(&tools.rows, &[
+    ];
+    let mut opens = vec![
         Action::Open(Screen::Install),
         Action::Open(Screen::Backup),
         Action::Open(Screen::Restore),
         Action::Open(Screen::Mount),
-        Action::Open(Screen::Decrypt),
-    ]));
+    ];
+    if !matches!(cx.state.data, Data::Open | Data::Erased) {
+        rows.push(
+            Row::new(l.pick(DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
+        );
+        opens.push(Action::Open(Screen::Decrypt));
+    }
+    let tools = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&tools.rows, &opens));
     y = tools.bottom + t.m.card_gap;
     let target = l.pick(REBOOT_TARGETS[cx.state.reboot].0);
     let system = widgets::list(&mut c, t, f, y, &[
@@ -439,34 +430,16 @@ pub fn settings(cx: &Ctx) -> Frame {
     y = widgets::section(&mut c, t, f, y, l.pick(["调试", "偵錯", "Debugging"]));
     let debug = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal)]);
     out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));
-    y = widgets::section(&mut c, t, f, debug.bottom, l.pick(["关于", "關於", "About"]));
-    let mut rows = vec![Row::new(l.pick(ABOUT)).trail(Trail::Value(VERSION))];
-    let mut opens = vec![Action::Open(Screen::About)];
     if s.offers(Screen::SkywardUpdate) {
+        y = widgets::section(&mut c, t, f, debug.bottom, l.pick(["关于", "關於", "About"]));
         let row = Row::new(l.pick(SKYWARD_UPDATE));
-        rows.push(match skyward_value(cx) {
-            Some(value) => row.trail(Trail::Value(value)),
-            None => row,
-        });
-        opens.push(Action::Open(Screen::SkywardUpdate));
+        let about = widgets::list(&mut c, t, f, y, &[row]);
+        out.extend(hits(&about.rows, &[Action::Open(Screen::SkywardUpdate)]));
+        y = about.bottom;
+    } else {
+        y = debug.bottom;
     }
-    let about = widgets::list(&mut c, t, f, y, &rows);
-    out.extend(hits(&about.rows, &opens));
-    Frame::new(t, fit(c, t, about.bottom), out, l.pick(SETTINGS), top)
-}
-
-/// What the settings page says beside its Skyward update entry: an update
-/// under way, or a newer release found.
-fn skyward_value(cx: &Ctx) -> Option<&'static str> {
-    let (s, l) = (cx.state, cx.state.lang);
-    if s.updating_skyward() {
-        return Some(l.pick(["正在更新", "正在更新", "Updating"]));
-    }
-    match (s.skyward_newest(), &s.skyward_job) {
-        (_, Some(SkywardJob { outcome: Some(SkywardEnd::Updated(_)), .. })) => Some(l.pick(["已更新", "已更新", "Updated"])),
-        (Some(n), _) if n.newer && n.build.is_some() => Some(l.pick(["有新版本", "有新版本", "New version"])),
-        _ => None,
-    }
+    Frame::new(t, fit(c, t, y), out, l.pick(SETTINGS), top)
 }
 
 /// How long the screen stays on with nothing touched, opened from the
@@ -741,15 +714,11 @@ pub fn specs(cx: &Ctx) -> Frame {
 pub fn decrypt(cx: &Ctx) -> Frame {
     let (c, l) = (page(cx), cx.state.lang);
     match &cx.state.data {
-        Data::Locked { user, keys, checking } => code(cx, c, *user, *keys, *checking),
-        Data::Closed | Data::Opening => data_status(
-            cx,
-            c,
-            Icon::Lock,
-            l.pick(["解密 data 分区", "解密 data 分割區", "Decrypt the data partition"]),
-            Some(l.pick(["正在读取锁屏方式", "正在讀取螢幕鎖定方式", "Reading the screen lock"])),
-            None,
-        ),
+        Data::Locked { user, keys, checking } => code(cx, c, *user, *keys, *checking, false),
+        // The keys stand as soon as the screen lights, so what is asked of the
+        // user is there to see; until the recovery knows which screen lock to
+        // read they are drawn faded and take no touch.
+        Data::Closed | Data::Opening => code(cx, c, 0, Keys::Digits, false, true),
         Data::Open => open_with_others(cx, c),
         Data::Failed(why) => data_status(cx, c, Icon::Lock, l.pick(["未能打开 data 分区", "無法開啟 data 分割區", "Couldn't open the data partition"]), None, Some(why)),
         Data::Erased => data_status(
@@ -832,7 +801,7 @@ fn open_with_others(cx: &Ctx, mut c: Canvas) -> Frame {
     let leave_cy = m.h as f32 - m.dp(64.0);
     c.text_center(&f.heading, l.pick(["完成", "完成", "Done"]), x, leave_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), leave_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
+    Frame { header: false, back: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
 }
 
 /// Where the partition stands, under its sign: a line on it, or why it
@@ -858,7 +827,7 @@ fn data_status(cx: &Ctx, mut c: Canvas, icon: Icon, title: &str, note: Option<&s
     let leave = l.pick(if matches!(cx.state.data, Data::Open | Data::Erased) { ["完成", "完成", "Done"] } else { NOT_NOW });
     c.text_center(&f.heading, leave, x, leave_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), leave_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
+    Frame { header: false, back: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
 }
 
 /// What leaves the decrypt page with the data partition left as it is.
@@ -870,7 +839,7 @@ const DECRYPT_NEEDED: Text = ["需先完成「解密」", "需先完成「解密
 
 /// A user's own files wait on their screen lock: the control it is
 /// answered with, which takes nothing while what was entered is checked.
-fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame {
+fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool, waiting: bool) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let m = &t.m;
     let x = m.w as f32 / 2.0;
@@ -881,15 +850,23 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
         (false, 0) => l.pick(["输入锁屏密码", "輸入螢幕鎖定密碼", "Enter the screen lock"]).to_string(),
         (false, user) => tr!(l, "输入用户 {user} 的锁屏密码", "輸入使用者 {user} 的螢幕鎖定密碼", "Enter user {user}'s screen lock"),
     };
-    let note = l.pick(if checking { ["正在验证", "正在驗證", "Checking"] } else { ["解密后可查看本机文件", "解密後可查看本機檔案", "Decrypt to see the phone's files"] });
+    let note = l.pick(if waiting {
+        ["正在读取锁屏方式", "正在讀取螢幕鎖定方式", "Reading the screen lock"]
+    } else if checking {
+        ["正在验证", "正在驗證", "Checking"]
+    } else {
+        ["解密后可查看本机文件", "解密後可查看本機檔案", "Decrypt to see the phone's files"]
+    });
+    // Neither a screen lock not yet known nor a code being checked takes keys.
+    let still = checking || waiting;
     c.text_center(&f.heading, &title, x, m.dp(130.0), m.dp(24.0), t.pal.text);
     c.text_center(&f.body, note, x, m.dp(166.0), m.sub_px, t.pal.subtitle);
     let mut pattern = None;
     let bottom = match keys {
         Keys::Letters => {
             let top = m.h as f32 - widgets::keyboard_height(t);
-            let caps = widgets::keyboard(&mut c, t, f, l, top, s.layer, s.key_held(), l.pick(DECRYPT));
-            if !checking {
+            let caps = widgets::keyboard(&mut c, t, f, l, top, s.layer, s.key_held(), l.pick(DECRYPT), still);
+            if !still {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
             }
             top
@@ -898,7 +875,7 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
             let span = m.dp(300.0);
             let cy = m.dp(300.0) + span / 2.0;
             widgets::pattern_lock(&mut c, t, x, cy, span, &s.pattern);
-            if !checking {
+            if !still {
                 out.push(Hit { rect: Rect::new(x - span, cy - span, span * 2.0, span * 2.0), action: Action::Pattern });
                 pattern = Some((x, cy, span));
             }
@@ -906,8 +883,8 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
         }
         Keys::Digits => {
             let top = m.h as f32 - widgets::keypad_height(t);
-            let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held());
-            if !checking {
+            let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held(), still);
+            if !still {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
             }
             top
@@ -921,7 +898,7 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
     let skip_cy = bottom - m.dp(34.0);
     c.text_center(&f.heading, l.pick(NOT_NOW), x, skip_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), skip_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, pattern, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
+    Frame { header: false, back: false, pattern, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
 }
 
 /// What a slot is shown as where the boot control could not be read.
@@ -1875,7 +1852,7 @@ pub fn wipe(cx: &Ctx) -> Frame {
 /// is, and its keys as touch targets.
 fn keyboard_hits(c: &mut Canvas, t: &Theme, f: &Fonts, s: &State, enter: &str, out: &mut Vec<Hit>) -> f32 {
     let top = t.m.h as f32 - widgets::keyboard_height(t);
-    let keys = widgets::keyboard(c, t, f, s.lang, top, s.layer, s.key_held(), enter);
+    let keys = widgets::keyboard(c, t, f, s.lang, top, s.layer, s.key_held(), enter, false);
     out.extend(keys.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
     top
 }
@@ -2906,152 +2883,32 @@ fn downloaded(l: Lang, progress: Progress, rate: u64) -> (&'static str, String, 
     }
 }
 
-/// Skyward's own update: the build running now; Skyward's newest release
-/// on GitHub, and updating to it; then what to note before updating.
+/// Who wrote Skyward, who saw to this build, the agent and the model that
+/// wrote it, and what they cost.
 pub fn skyward_update(cx: &Ctx) -> Frame {
     let (t, f, l) = (cx.t, cx.f, cx.state.lang);
     let mut c = long_page(cx);
     let top = t.m.content_top;
-    let mut out = Vec::new();
-    let y = widgets::section_first(&mut c, t, f, top, l.pick(["本机", "本機", "This phone"]));
-    let y = widgets::info_card(&mut c, t, f, y, &[(l.pick(["当前版本", "目前版本", "Current version"]), VERSION.to_string())]);
-    let y = widgets::section(&mut c, t, f, y, l.pick(["在线更新", "線上更新", "Online update"]));
-    let y = skyward_online(&mut c, cx, y, &mut out);
-    let points = [
-        l.pick([
-            "新版本从 GitHub 下载，校验 SHA-256 后写入 recovery 分区，不会改动系统和用户数据。",
-            "新版本從 GitHub 下載，驗證 SHA-256 後寫入 recovery 分割區，不會改動系統和使用者資料。",
-            "The new version is downloaded from GitHub and goes into the recovery partitions once its SHA-256 checks out. The system and user data are left as they are.",
-        ]),
-        l.pick([
-            "新版本将写入下次启动所用槽位的 recovery 分区；另一个槽位装有 Skyward 时，也会一并更新。",
-            "新版本將寫入下次啟動所用槽位的 recovery 分割區；另一個槽位裝有 Skyward 時，也會一併更新。",
-            "The new version goes into the recovery partition of the slot that starts next, and into the other slot's where it holds Skyward.",
-        ]),
-        l.pick(["更新完成后，重启到恢复模式即可使用新版本。", "更新完成後，重新啟動到復原模式即可使用新版本。", "Once updated, reboot to recovery to use the new version."]),
-    ];
-    let y = widgets::notes(&mut c, t, f, y + t.m.card_gap, l.pick(NOTES), &points);
+    let out = Vec::new();
+    let y = widgets::section_first(&mut c, t, f, top, l.pick(PROJECT_AUTHOR));
+    let y = widgets::info_card(&mut c, t, f, y, &[("Kirk Lin", VERSION.to_string())]);
+    let y = widgets::section(&mut c, t, f, y, l.pick(OPTIMIZED_BY));
+    let y = widgets::info_card(&mut c, t, f, y, &[("是山上耕田呀", "0.0.1".to_string())]);
+    let y = widgets::section(&mut c, t, f, y, l.pick(CODING_AGENT));
+    let y = widgets::info_card(&mut c, t, f, y, &[("DeepSeek Harness", l.pick(TOKENS_SPENT).to_string())]);
+    let y = widgets::section(&mut c, t, f, y, l.pick(BASE_MODEL));
+    let y = widgets::info_card(&mut c, t, f, y, &[("DeepSeek V4.1 Flash", l.pick(TEN_YUAN).to_string())]);
     Frame::new(t, fit(c, t, y), out, l.pick(SKYWARD_UPDATE), top)
 }
 
-/// Asking GitHub for Skyward's newest release, then updating to it: its
-/// build for the phone downloaded and written into the recovery partitions,
-/// how far that has come, and how it ended.
-fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
-    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let gap = t.m.card_gap;
-    let newest = match &s.skyward_check {
-        SkywardCheck::Asking => return widgets::list(c, t, f, y, &[Row::new(l.pick(CHECKING)).trail(Trail::None)]).bottom,
-        SkywardCheck::Answered(n) => n,
-        other => {
-            let mut row = Row::new(l.pick(CHECK_FOR_UPDATES));
-            if !s.online() {
-                row = row.subtitle(l.pick(WLAN_FIRST));
-            }
-            let check = widgets::list(c, t, f, y, &[row]);
-            out.extend(hits(&check.rows, &[Action::CheckSkyward]));
-            return match other {
-                SkywardCheck::Failed(why) => widgets::footnote(c, t, f, check.bottom, &fmt::unanswered(l, why)),
-                _ => check.bottom,
-            };
-        }
-    };
-    let version = &newest.version;
-    let (title, detail) = match (newest.newer, &newest.build) {
-        (true, Some(build)) => {
-            let size = fmt::file_size(build.size);
-            (tr!(l, "新版本 {version}", "新版本 {version}", "New version {version}"), tr!(l, "安装包 {size}", "安裝包 {size}", "Package {size}"))
-        }
-        (true, None) => (
-            tr!(l, "新版本 {version}", "新版本 {version}", "New version {version}"),
-            l.pick(["没有本机的安装包", "沒有本機的安裝包", "No package for this phone"]).to_string(),
-        ),
-        (false, _) => (
-            l.pick(["已是最新版本", "已是最新版本", "Up to date"]).to_string(),
-            tr!(l, "最新发布的版本为 {version}", "最新發佈的版本為 {version}", "The newest release is {version}"),
-        ),
-    };
-    let y = widgets::list(c, t, f, y, &[Row::new(&title).icon(GREEN, Icon::Install).subtitle(&detail).trail(Trail::None)]).bottom;
-    if !newest.newer || newest.build.is_none() {
-        return y;
-    }
-    match &s.skyward_job {
-        Some(job) if job.outcome.is_none() => {
-            let (heading, detail, share) = match job.stage {
-                None => (l.pick(GETTING_READY), String::new(), None),
-                Some(SkywardStage::Download(p)) => downloaded(l, p, job.rate),
-                Some(SkywardStage::Write { done, total }) => {
-                    let part = share(done, total);
-                    let p = percent(part);
-                    (l.pick(["正在写入 recovery 分区", "正在寫入 recovery 分割區", "Writing the recovery partitions"]), tr!(l, "已完成 {p}%", "已完成 {p}%", "{p}% done"), Some(part))
-                }
-            };
-            let y = widgets::progress_card(c, t, f, y + gap, heading, &detail, share);
-            if matches!(job.stage, Some(SkywardStage::Write { .. })) {
-                return widgets::footnote(c, t, f, y, l.pick(["写入完成前，请不要关机。", "寫入完成前，請不要關機。", "Don't power off until it's written."]));
-            }
-            let stop = widgets::list(c, t, f, y + gap, &[Row::new(l.pick(if job.stopping { STOPPING } else { STOP })).trail(Trail::None)]);
-            if !job.stopping {
-                out.extend(hits(&stop.rows, &[Action::StopSkywardUpdate]));
-            }
-            stop.bottom
-        }
-        Some(SkywardJob { outcome: Some(SkywardEnd::Updated(slots)), .. }) => {
-            let names = fmt::slots(l, slots);
-            let detail = match (l, slots.len()) {
-                (Lang::En, 1) => format!("Skyward {version} is in {names}'s recovery partition."),
-                _ => tr!(
-                    l,
-                    "已将 Skyward {version} 刷入{names} 的 recovery 分区。",
-                    "已將 Skyward {version} 刷入{names} 的 recovery 分割區。",
-                    "Skyward {version} is in the recovery partitions of {names}."
-                ),
-            };
-            let y = widgets::list(c, t, f, y + gap, &[standing(l.pick(["更新成功", "更新成功", "Updated"]), GREEN, Icon::Install, &detail)]).bottom;
-            let restart = widgets::list(c, t, f, y + gap, &[Row::new(l.pick(["重启到恢复模式", "重新啟動到復原模式", "Reboot to recovery"])).icon(ORANGE, Icon::Power)]);
-            out.extend(hits(&restart.rows, &[Action::RebootTo(Target::Recovery)]));
-            restart.bottom
-        }
-        job => {
-            let mut y = y;
-            match job.as_ref().and_then(|j| j.outcome.as_ref()) {
-                Some(SkywardEnd::Stopped) => y = widgets::footnote(c, t, f, y, l.pick(["已停止下载。", "已停止下載。", "Download stopped."])),
-                Some(SkywardEnd::Download(why)) => y = widgets::footnote(c, t, f, y, &fmt::skyward_download_failure(l, why)),
-                Some(SkywardEnd::NotWritten(why)) => {
-                    y = widgets::footnote(c, t, f, y, l.pick(["更新失败，未写入任何内容。", "更新失敗，未寫入任何內容。", "Couldn't update. Nothing was written."]));
-                    y = widgets::footnote(c, t, f, y, why);
-                }
-                Some(SkywardEnd::WriteFailed(slots, why)) => {
-                    let names = fmt::slots(l, slots);
-                    let warning = match (l, slots.len()) {
-                        (Lang::En, 1) => format!(
-                            "{}'s recovery partition was only partly written, so rebooting to recovery may not start Skyward. Update again, and reboot once it's done.",
-                            capitalized(l, &names)
-                        ),
-                        _ => tr!(
-                            l,
-                            "{names} 的 recovery 分区仅写入了部分内容，重启到恢复模式可能无法进入 Skyward。请重新更新，完成后再重启。",
-                            "{names} 的 recovery 分割區僅寫入了部分內容，重新啟動到復原模式可能無法進入 Skyward。請重新更新，完成後再重新啟動。",
-                            "The recovery partitions of {names} were only partly written, so rebooting to recovery may not start Skyward. Update again, and reboot once it's done."
-                        ),
-                    };
-                    y = widgets::footnote(c, t, f, y, &warning);
-                    y = widgets::footnote(c, t, f, y, why);
-                }
-                Some(SkywardEnd::Updated(_)) => unreachable!("an update that went in shows how it did"),
-                None => {}
-            }
-            let mut row = Row::new(l.pick(["下载并更新", "下載並更新", "Download and update"]));
-            if !s.online() {
-                row = row.subtitle(l.pick(WLAN_FIRST));
-            }
-            let update = widgets::list(c, t, f, y + gap, &[row]);
-            out.extend(hits(&update.rows, &[Action::UpdateSkyward]));
-            update.bottom
-        }
-    }
-}
-
+/// Who wrote the recovery, who saw to the build running, what wrote it and on
+/// what model, and what it all cost.
+const PROJECT_AUTHOR: Text = ["项目原作者", "專案原作者", "Original author"];
+const OPTIMIZED_BY: Text = ["项目优化者", "專案優化者", "Optimized by"];
+const CODING_AGENT: Text = ["编码 agent", "編碼 agent", "Coding agent"];
+const BASE_MODEL: Text = ["底层模型", "底層模型", "Base model"];
+const TOKENS_SPENT: Text = ["截至目前版本 消耗超过了一亿词元！", "截至目前版本 消耗超過了一億詞元！", "More than a hundred million tokens spent so far!"];
+const TEN_YUAN: Text = ["改这么些东西可花了我十块钱呢！", "改這麼些東西可花了我十塊錢呢！", "All these changes cost me ten yuan!"];
 /// The WLAN switch; then the network chosen and how joining it goes, and
 /// the networks in range, strongest first.
 pub fn wlan(cx: &Ctx) -> Frame {
@@ -3064,12 +2921,32 @@ pub fn wlan(cx: &Ctx) -> Frame {
     let switch = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(WLAN)).trail(Trail::Switch(on))]);
     out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan)]));
     let mut y = switch.bottom;
+    // Where the password typed on a network's page is kept: the persist
+    // partition, which nothing locks and which is there before the data
+    // partition opens, or the data partition, which only opens unlocked.
+    let kept = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(l.pick(KEEP_ON_DATA)).trail(Trail::Switch(s.wlan_kept))]);
+    out.extend(hits(&kept.rows, &[Action::Toggle(Switch::WlanKept)]));
+    y = kept.bottom;
+    let kept_note = if s.wlan_kept {
+        l.pick([
+            "密码只写进 data 分区，未解密时读不到，更安全；解密之前 Wi-Fi 不会自动连上。",
+            "密碼只寫進 data 分割區，未解密時讀不到，較安全；解密之前 Wi-Fi 不會自動連上。",
+            "The password is written only to the data partition, which stays shut until it is unlocked; until then Wi-Fi won't join on its own.",
+        ])
+    } else {
+        l.pick([
+            "密码写在 persist 分区，每次开机都能直接用；该分区不加密，能读写它的人可以看到密码。",
+            "密碼寫在 persist 分割區，每次開機都能直接用；該分割區不加密，能讀寫它的人可以看到密碼。",
+            "The password is written to the persist partition and works at every start; that partition is not encrypted, so whoever can read it can see the password.",
+        ])
+    };
+    y = widgets::footnote(&mut c, t, f, y, kept_note);
     match &w.power {
         Power::Off => {
             let note = l.pick([
-                "开启后，可连接 WLAN 下载系统更新和 Skyward 新版本。",
-                "開啟後，可連接 Wi-Fi 下載系統更新和 Skyward 新版本。",
-                "When on, system updates and new versions of Skyward can download over Wi-Fi.",
+                "开启后，可连接 WLAN 下载系统更新。",
+                "開啟後，可連接 Wi-Fi 下載系統更新。",
+                "When on, system updates can download over Wi-Fi.",
             ]);
             y = widgets::footnote(&mut c, t, f, y, note)
         }
@@ -3143,6 +3020,7 @@ pub fn wlan(cx: &Ctx) -> Frame {
 }
 
 const ADD_NETWORK: Text = ["添加网络", "新增網路", "Add network"];
+const KEEP_ON_DATA: Text = ["密码存在 data 分区", "密碼存在 data 分割區", "Keep password on data"];
 const SHOW_PASSWORD: Text = ["显示密码", "顯示密碼", "Show password"];
 const CONNECT_KEY: Text = ["连接", "連線", "Connect"];
 const SECURITY: Text = ["安全性", "安全性", "Security"];

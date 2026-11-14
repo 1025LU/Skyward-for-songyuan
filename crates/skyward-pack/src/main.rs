@@ -159,6 +159,16 @@ fn main() -> Result<()> {
                 ensure!(omapi.is_none(), "this device configuration does not use the OMAPI bridge");
             }
             rd.replace(paths::RECOVERY, read(&binary)?)?;
+            // The libraries of the stock recovery's own user interface
+            // and the pictures it draws: the recovery this image carries
+            // loads and draws neither, and together they are more than
+            // a third of the ramdisk.
+            for name in paths::STOCK_UI {
+                if let Some(at) = rd.entries.iter().position(|e| e.name == name) {
+                    rd.entries.remove(at);
+                }
+            }
+            rd.entries.retain(|e| !e.name.starts_with(paths::PICTURES));
             // Install scripts look for the commands a stock recovery lacks
             // among its programs, and its unzip there too, a link to ziptool
             // until it points here; the recovery binary is each of them.

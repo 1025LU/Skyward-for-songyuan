@@ -39,8 +39,14 @@ const CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 ///
 /// `libraries` is a directory of shared libraries every one of them may
 /// need, searched after whatever it names itself.
-pub fn start(services: &[Service], libraries: Option<&Path>) -> Result<()> {
+pub fn start(services: &[Service], libraries: Option<&Path>) -> Result<Option<thread::JoinHandle<()>>> {
     let known = ueventd::accounts(&ueventd::PASSWD_FILES.iter().chain(&ueventd::GROUP_FILES).copied().collect::<Vec<_>>());
+    // What each program says it will be ready with is waited on in one
+    // thread of their own, in the order they are written, so that the
+    // recovery is not held back by a program that takes its time: the
+    // screen comes up and the person can start typing while a service the
+    // data partition needs is still finding its feet.
+    let mut pending: Vec<Service> = Vec::new();
     for s in services {
         if !Path::new(&s.path).is_file() {
             skyward_sys::kmsg(&format!("{} is missing; it is not started", s.path))?;
@@ -68,11 +74,22 @@ pub fn start(services: &[Service], libraries: Option<&Path>) -> Result<()> {
         let name = Path::new(&s.path).file_name().map_or_else(|| s.path.clone(), |n| n.to_string_lossy().into_owned());
         let accounts = known.clone();
         thread::Builder::new().name(name).spawn(move || supervise(&s, &who, &accounts)).context("start a supervising thread")?;
-        if let Err(e) = ready(&waiting) {
-            skyward_sys::kmsg(&format!("{e:#}"))?;
-        }
+        pending.push(waiting);
     }
-    Ok(())
+    if pending.is_empty() {
+        return Ok(None);
+    }
+    let waiter = thread::Builder::new()
+        .name("ready".into())
+        .spawn(move || {
+            for s in pending {
+                if let Err(e) = ready(&s) {
+                    let _ = skyward_sys::kmsg(&format!("{e:#}"));
+                }
+            }
+        })
+        .context("start the thread that waits for what they say they will be ready with")?;
+    Ok(Some(waiter))
 }
 
 /// Who a program runs as and what of root's it keeps, as the phone's own

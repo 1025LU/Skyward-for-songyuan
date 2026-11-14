@@ -57,11 +57,20 @@ pub fn set_from_rtc() -> Result<u64> {
     let rtc = fs::read_to_string(RTC).with_context(|| format!("read {RTC}"))?;
     let rtc_s: u64 = rtc.trim().parse().with_context(|| format!("{RTC} holds {rtc:?}"))?;
     let now = wall(rtc_s, offset_ms);
-    let ts = libc::timespec { tv_sec: (now / 1000) as libc::time_t, tv_nsec: ((now % 1000) * 1_000_000) as libc::c_long };
+    set_wall(now)?;
+    Ok(now)
+}
+
+/// Set the system clock to `ms`, in Unix milliseconds, wherever the time
+/// came from.
+#[cfg(target_os = "android")]
+pub fn set_wall(ms: u64) -> Result<()> {
+    use anyhow::Context;
+    let ts = libc::timespec { tv_sec: (ms / 1000) as libc::time_t, tv_nsec: ((ms % 1000) * 1_000_000) as libc::c_long };
     if unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &ts) } != 0 {
         return Err(std::io::Error::last_os_error()).context("set the system clock");
     }
-    Ok(now)
+    Ok(())
 }
 
 #[cfg(test)]

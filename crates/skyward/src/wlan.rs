@@ -34,6 +34,11 @@ const PARTITIONS: &str = "/skyward/wlan";
 /// recovery service's own folder.
 const HOME: &str = "/skyward/run/supplicant";
 
+/// The file a password entered once is kept in, on the persist partition:
+/// nothing unlocks it, and a flash of the recovery leaves it alone. Its one
+/// line is two hex fields, tab apart: the network's name and its password.
+const REMEMBERED: &str = "skyward-wifi";
+
 /// The user the supplicant takes on as it starts, who has to be able to
 /// make its socket.
 const WIFI: u32 = 1010;
@@ -49,7 +54,7 @@ const SOCKET_WAIT: Duration = Duration::from_secs(10);
 const END_WAIT: Duration = Duration::from_secs(3);
 
 /// How often a network joined is read for its signal.
-const POLL: Duration = Duration::from_secs(5);
+const POLL: Duration = Duration::from_secs(1);
 
 /// How often what went over the interface is counted, for how fast it
 /// goes.
@@ -65,6 +70,9 @@ pub enum Command {
     Scan,
     Join { ssid: Vec<u8>, name: String, security: Security, password: String },
     Leave,
+    /// Keep the password entered from now on on the data partition, which
+    /// only opens once it is unlocked, rather than on the persist one.
+    KeepIn { data: bool },
 }
 
 /// What comes to the thread: a command, how asking for an address went,
@@ -137,7 +145,7 @@ impl Worker {
                     let _ = told_tx.send(r);
                     signal(&rung);
                 };
-                let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, back, tell: Box::new(tell) };
+                let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, left: false, tried: false, kept_in_data: false, timed: false, back, tell: Box::new(tell) };
                 s.run(&inbox, &poked);
             })
             .context("start the WLAN thread")?;
@@ -244,6 +252,16 @@ struct Station {
     servers: Servers,
     state: Wlan,
     running: Option<Running>,
+    /// Whether the one at the screen has left, so that the network kept is
+    /// not joined behind their back.
+    left: bool,
+    /// Whether the network kept has been tried this run.
+    tried: bool,
+    /// Whether the password is kept on the data partition rather than on the
+    /// persist one, as the screen asks.
+    kept_in_data: bool,
+    /// Whether the clock has been set from the network this run.
+    timed: bool,
     back: Back,
     tell: Box<dyn Fn(Report) + Send>,
 }
@@ -302,14 +320,23 @@ impl Station {
             }
             Command::Join { ssid, name, security, password } => {
                 self.unaddress();
-                let mut joined = Joined { ssid, name, security, stage: Stage::Joining };
-                if let Err(e) = self.join(&joined, &password) {
-                    let _ = skyward_sys::kmsg(&format!("joining {} failed: {e:#}", joined.name));
-                    joined.stage = Stage::Failed;
+                self.left = false;
+                let mut joined = Joined { ssid: ssid.clone(), name, security, stage: Stage::Joining };
+                match self.join(&joined, &password) {
+                    Ok(()) => keep(&ssid, &password, security, self.kept_in_data),
+                    Err(e) => {
+                        let _ = skyward_sys::kmsg(&format!("joining {} failed: {e:#}", joined.name));
+                        joined.stage = Stage::Failed;
+                    }
                 }
                 self.state.joined = Some(joined);
             }
+            Command::KeepIn { data } => {
+                self.kept_in_data = data;
+                self.join_kept();
+            }
             Command::Leave => {
+                self.left = true;
                 self.unaddress();
                 if let Some(r) = &self.running {
                     if let Err(e) = r.control.order("REMOVE_NETWORK all") {
@@ -329,8 +356,12 @@ impl Station {
         (self.tell)(Report::Wlan(self.state.clone()));
         match self.start() {
             Ok(r) => {
+                let _ = skyward_sys::kmsg("the WLAN is up: wpa_supplicant answers on its control socket");
                 self.running = Some(r);
                 self.state.power = Power::On;
+                self.tried = false;
+                self.left = false;
+                self.join_kept();
                 self.command(Command::Scan);
             }
             Err(e) => {
@@ -399,7 +430,7 @@ impl Station {
         let id: u32 = r.control.ask("ADD_NETWORK")?.trim().parse().context("wpa_supplicant numbered the network with no number")?;
         // One the last scan did not see may hide its name, as one added by
         // hand may.
-        let hidden = !r.found.iter().any(|b| b.ssid == joined.ssid);
+        let hidden = !r.found.is_empty() && !r.found.iter().any(|b| b.ssid == joined.ssid);
         for c in supplicant::network_commands(id, &joined.ssid, joined.security, password, hidden)? {
             r.control.order(&c)?;
         }
@@ -439,8 +470,23 @@ impl Station {
             found.extend(page);
         }
         self.state.networks = wlan::networks(&found);
+        let _ = skyward_sys::kmsg(&format!("the scan found {} networks", found.len()));
         r.found = found;
         Ok(())
+    }
+
+    /// Join the network a password was kept for, as soon as there is a
+    /// supplicant to join it with: the security was kept with the password,
+    /// so no scan has to answer first.
+    fn join_kept(&mut self) {
+        if self.running.is_none() || self.left || self.tried || self.state.joined.is_some() {
+            return;
+        }
+        let Some((ssid, password, security)) = kept(self.kept_in_data) else { return };
+        self.tried = true;
+        let name = String::from_utf8_lossy(&ssid).into_owned();
+        let _ = skyward_sys::kmsg(&format!("joining {name} with the password kept, no scan waited for"));
+        self.command(Command::Join { ssid, name, security, password });
     }
 
     fn joining(&mut self, told: &Told) {
@@ -470,6 +516,7 @@ impl Station {
         }
         r.asked += 1;
         let n = r.asked;
+        let _ = skyward_sys::kmsg("joined the network, asking it for an address");
         let stop = Arc::new(AtomicBool::new(false));
         r.asking = Some((n, stop.clone()));
         let mac = r.mac;
@@ -564,9 +611,34 @@ impl Station {
         if self.running.as_ref().is_none_or(|r| r.probed != n) {
             return;
         }
+        let online = matches!(reach, Reach::Online);
         let Some(Joined { stage: Stage::Connected(link), .. }) = &mut self.state.joined else { return };
         let _ = skyward_sys::kmsg(&format!("the network on {} {reach}", self.cfg.interface));
         link.reach = Some(reach);
+        // The clock a recovery starts with is the PMIC's count from zero,
+        // and nothing on the phone says how long ago that was; a page that
+        // answers says what the time is, and one answer is enough.
+        if online && !self.timed {
+            self.timed = true;
+            let servers = self.servers.clone();
+            let page = self.cfg.probe.clone();
+            thread::spawn(move || {
+                let dns = servers.lock().expect("the DNS servers are not held by a thread that panicked").clone();
+                match reach::time(&page, &dns) {
+                    Ok(ms) => match skyward_sys::clock::set_wall(ms) {
+                        Ok(()) => {
+                            let _ = skyward_sys::kmsg(&format!("the clock is set from {page}"));
+                        }
+                        Err(e) => {
+                            let _ = skyward_sys::kmsg(&format!("the clock is not set: {e:#}"));
+                        }
+                    },
+                    Err(e) => {
+                        let _ = skyward_sys::kmsg(&format!("{page} named no time: {e:#}"));
+                    }
+                }
+            });
+        }
     }
 
     /// Give the address back, and stop asking for one or keeping it.
@@ -735,6 +807,82 @@ fn read_through_mount(partition: &str, path: &str) -> Option<Result<Vec<u8>>> {
     // refused while the first is there, so the read's own reason is the one
     // worth having.
     Some(fs::read(&file).with_context(|| format!("read {} through {}", file.display(), at.display())))
+}
+
+/// Where a password entered once is kept: on the persist partition, which
+/// nothing unlocks and a flash of the recovery leaves alone, or on the data
+/// partition, which only opens once it is unlocked.
+fn remembered(in_data: bool) -> Option<PathBuf> {
+    let at = skyward_block::fstab::mount_point(if in_data { "data" } else { "persist" }).ok().flatten()?;
+    Some(at.join(REMEMBERED))
+}
+
+/// Keep the password entered for `ssid` for the next run.
+fn keep(ssid: &[u8], password: &str, security: Security, in_data: bool) {
+    let Some(path) = remembered(in_data) else {
+        let _ = skyward_sys::kmsg(if in_data {
+            "the password is not kept: the data partition is not open yet"
+        } else {
+            "the password is not kept: the persist partition is not mounted"
+        });
+        return;
+    };
+    let text = format!(
+        "{}\t{}\t{}\n",
+        supplicant::hex(ssid),
+        supplicant::hex(password.as_bytes()),
+        security_name(security)
+    );
+    if let Err(e) = fs::write(&path, &text) {
+        let _ = skyward_sys::kmsg(&format!("could not keep the password in {}: {e:#}", path.display()));
+        return;
+    }
+    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+}
+
+/// The network a password was kept for, that password, and how the network
+/// is protected.
+fn kept(in_data: bool) -> Option<(Vec<u8>, String, Security)> {
+    let path = remembered(in_data)?;
+    let text = fs::read_to_string(&path).ok()?;
+    let mut fields = text.lines().next()?.split('\t');
+    let (name, password, security) = (fields.next()?, fields.next()?, fields.next()?);
+    Some((unhex(name)?, String::from_utf8(unhex(password)?).ok()?, security_named(security)?))
+}
+
+/// How a network's security is written down beside its password.
+fn security_name(security: Security) -> &'static str {
+    match security {
+        Security::Open => "open",
+        Security::Owe => "owe",
+        Security::Wep => "wep",
+        Security::Psk => "psk",
+        Security::Sae => "sae",
+        Security::PskSae => "psk-sae",
+        Security::Enterprise => "enterprise",
+    }
+}
+
+/// The security written down beside a password, read back.
+fn security_named(text: &str) -> Option<Security> {
+    Some(match text {
+        "open" => Security::Open,
+        "owe" => Security::Owe,
+        "wep" => Security::Wep,
+        "psk" => Security::Psk,
+        "sae" => Security::Sae,
+        "psk-sae" => Security::PskSae,
+        "enterprise" => Security::Enterprise,
+        _ => return None,
+    })
+}
+
+/// The bytes a hex string stands for, two digits a byte.
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.is_ascii() || !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok()).collect()
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.

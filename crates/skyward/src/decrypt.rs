@@ -9,6 +9,7 @@ use skyward_crypto::keymint::KeyMint;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 pub enum Job {
     /// Open the partition as far as it opens with nothing a user knows.
@@ -96,8 +97,23 @@ pub fn with_key_service<T>(work: impl FnOnce(&KeyMint) -> Result<T>) -> Result<T
     work_with_key_service(work).map_err(|e| format!("{e:#}"))
 }
 
+/// How long the phone's key service is given to register before the page is
+/// told it is missing. The services are started beside the screen now, so the
+/// first call for the keys can arrive before the key service has claimed its
+/// name; the screen shows the screen lock faded meanwhile, which is what the
+/// wait looks like.
+const KEY_SERVICE_WAIT: Duration = Duration::from_secs(20);
+const KEY_SERVICE_POLL: Duration = Duration::from_millis(100);
+
 fn work_with_key_service<T>(work: impl FnOnce(&KeyMint) -> Result<T>) -> Result<T> {
     let binder = Binder::open()?;
-    let service = KeyMint::open(&binder)?;
+    let until = Instant::now() + KEY_SERVICE_WAIT;
+    let service = loop {
+        match KeyMint::open(&binder) {
+            Ok(service) => break service,
+            Err(_) if Instant::now() < until => thread::sleep(KEY_SERVICE_POLL),
+            Err(e) => return Err(e),
+        }
+    };
     work(&service)
 }

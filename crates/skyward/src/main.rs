@@ -282,7 +282,7 @@ fn main() -> Result<()> {
             let props = skyward_info::installed_props(booted_slot()?)?;
             let mut services = DeviceConfig::load(&config)?.services;
             services.retain(|s| s.runs_on(&props));
-            services::start(&services, secure::libraries()?.as_deref())?;
+            let _ = services::start(&services, secure::libraries()?.as_deref())?;
             loop {
                 std::thread::park();
             }
@@ -581,8 +581,22 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
         Ok(copied) => skyward_sys::kmsg(&format!("{copied} libraries of the installed system are in place for its services"))?,
         Err(e) => skyward_sys::kmsg(&format!("the installed system's libraries are not in place: {e:#}"))?,
     }
-    services::start(&services, libraries.as_deref())?;
-    agree_on_the_notes_key(&registering)
+    // The key service is one of those whose readiness is waited on in the
+    // background, so the notes key is agreed on there too, after them.
+    let waiter = services::start(&services, libraries.as_deref())?;
+    let registered = registering.clone();
+    std::thread::Builder::new()
+        .name("notes".into())
+        .spawn(move || {
+            if let Some(waiter) = waiter {
+                let _ = waiter.join();
+            }
+            if let Err(e) = agree_on_the_notes_key(&registered) {
+                let _ = skyward_sys::kmsg(&format!("the secure world did not agree on the notes key: {e:#}"));
+            }
+        })
+        .context("start the thread that agrees on the notes key")?;
+    Ok(())
 }
 
 /// Give each file the phone's own init hands over as it boots to the
@@ -688,6 +702,13 @@ const REMOTEPROC: &str = "/sys/class/remoteproc";
 #[cfg(target_os = "android")]
 const ADSP_READY: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How long the DSP is given on a kernel whose loader shows no switch to ask
+/// again: none at all. The kernel starts the DSP while the modules load, so
+/// one still offline after that is not coming up, and reading its state once
+/// says all there is to say.
+#[cfg(target_os = "android")]
+const ADSP_GRACE: std::time::Duration = std::time::Duration::ZERO;
+
 /// How long the DSP is given once the loader has been asked again.
 #[cfg(target_os = "android")]
 const ADSP_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -718,7 +739,13 @@ const ADSP_BOOT: &str = "/sys/kernel/boot_adsp/boot";
 #[cfg(target_os = "android")]
 fn wait_for_adsp() -> Result<()> {
     if let Some(adsp) = adsp()? {
-        if waiting_for_running(&adsp, ADSP_READY)? {
+        // A kernel with no loader switch cannot be asked for another try, so
+        // waiting the full time for one would only hold the pages back.
+        let within = match Path::new(ADSP_BOOT).exists() {
+            true => ADSP_READY,
+            false => ADSP_GRACE,
+        };
+        if waiting_for_running(&adsp, within)? {
             return skyward_sys::kmsg(&format!("{} runs, so the secure element's HAL can reach it", adsp.display()));
         }
         // Offline: the kernel's own attempt did not have `/firmware` to look
@@ -727,6 +754,12 @@ fn wait_for_adsp() -> Result<()> {
         // says so in the kernel log and the moment below runs out.
         match std::fs::write(ADSP_BOOT, "1") {
             Ok(()) => skyward_sys::kmsg("the ADSP is offline; asked the loader again now that /firmware is in place")?,
+            // A kernel that shows no such switch cannot be asked for another
+            // try at all, so the wait below would only hold the pages back.
+            // Give up at once instead and let the recovery carry on.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(anyhow!("it is offline and this kernel shows no loader switch to ask again: {e}"));
+            }
             Err(e) => skyward_sys::kmsg(&format!("the ADSP is offline and cannot be asked again: {e}"))?,
         }
         if waiting_for_running(&adsp, ADSP_RETRY)? {
@@ -910,7 +943,7 @@ fn recovery() -> Result<()> {
                 prepare(&cfg, booted_slot()?)?;
             }
             let root = Path::new("/");
-            ui::run(&cfg, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None)
+            ui::run(&cfg, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Decrypt, None)
         }
         #[cfg(not(target_os = "android"))]
         {

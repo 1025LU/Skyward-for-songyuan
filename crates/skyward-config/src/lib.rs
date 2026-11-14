@@ -34,6 +34,16 @@ pub mod ramdisk {
     pub const TASK_PROFILES: &str = "system/etc/task_profiles.json";
     /// The init rules that set up file transfer's USB function.
     pub const MTP_RC: &str = "system/etc/init/skyward-mtp.rc";
+    /// The libraries of the stock recovery's own user interface, which
+    /// the recovery this image carries does not load.
+    pub const STOCK_UI: [&str; 3] = [
+        "system/lib64/librecovery_ui_ext.so",
+        "system/lib64/librecovery_ui.so",
+        "system/lib64/librecovery_updater.so",
+    ];
+    /// The pictures the stock recovery draws, which the recovery this
+    /// image carries does not use.
+    pub const PICTURES: &str = "res/";
 
     /// Whether the running root is Skyward's recovery ramdisk.
     pub fn in_recovery() -> bool {

@@ -39,7 +39,7 @@ use skyward_ui::aod::Want;
 use skyward_ui::app::{
     App, Asked, AvbStatus, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
     FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
-    RenameRefused, Screen, Shot, SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
+    RenameRefused, Screen, Shot, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
     INSTALL_UNFINISHED, USB_DRIVE,
 };
 use skyward_ui::settings::Keeper;
@@ -70,6 +70,12 @@ const TOUCH_WAIT: Duration = Duration::from_secs(5);
 /// the display turns off; the phone's own system keeps its panel dozing
 /// about as long after the screen goes off.
 const REST: Duration = Duration::from_secs(5);
+
+/// How long after the panel lights the touchscreen is told again how to
+/// report positions. The controller's own resume resets it, and a write
+/// that lands in the middle of that reset is read back as a CRC error and
+/// dropped; the reset takes about 40 ms, which this leaves room for.
+const RETOUCH: Duration = Duration::from_millis(150);
 
 /// Where logs saved to the temporary folder go, in the recovery service's
 /// own folder, and where in internal storage the others do.
@@ -865,6 +871,13 @@ fn clock(zone: usize) -> Result<String> {
     Ok(skyward_ui::fmt::clock(unix_now()?, zone))
 }
 
+/// The minutes of the day an `HH:MM` names, to tell a clock jumping from one
+/// simply going on.
+fn minutes_of(text: &str) -> Option<i64> {
+    let (hours, minutes) = text.split_once(':')?;
+    Some(hours.parse::<i64>().ok()? * 60 + minutes.parse::<i64>().ok()?)
+}
+
 /// Tell the kernel log how the data partition was mounted, where opening
 /// it mounted it: the check made first, in full where it found something,
 /// and the device it is read through.
@@ -1282,6 +1295,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // Whether the panel's frame memory has been blacked out for an off
     // panel; cleared once a real frame is shown again.
     let mut blanked = false;
+    // When the touchscreen is to be told again how to report positions:
+    // after the panel lights, since its own resume resets it then.
+    let mut retell_at: Option<Instant> = None;
     // The panel's own doze, on a phone that names one: a dark panel then
     // keeps the time on the glass with the backlight at 0.
     let mut doze = cfg.aod.as_ref().map(aod::Panel::new);
@@ -1342,7 +1358,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let by_name = Path::new(skyward_block::BY_NAME);
     let both = |base: &str| -> Result<bool> { Ok(by_name.join(format!("{base}_a")).try_exists()? && by_name.join(format!("{base}_b")).try_exists()?) };
     app.state.recovery_partitions = both("recovery")?;
-    app.state.dual_boot = app.state.recovery_partitions && both("boot")? && both("init_boot")?;
+    // A second system is no longer held: with this false the home page offers
+    // none, the install page installs none, and the work for one never starts.
+    app.state.dual_boot = false;
     // The second system's work; the systems are read at once, for the home
     // page to name the one that starts, once a switch cut off before is
     // finished.
@@ -1526,6 +1544,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             match started {
                 Ok(worker) => {
                     app.start_wlan();
+                    worker.send(wlan::Command::KeepIn { data: app.state.wlan_kept });
                     worker.send(wlan::Command::On);
                     Some(worker)
                 }
@@ -1545,9 +1564,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // Asking the update server, and downloading the full package.
     let mut checker: Option<updates::Worker> = None;
     let mut downloader: Option<updates::Worker> = None;
-    // Asking GitHub for Skyward's newest release, and updating to it.
-    let mut skyward_checker: Option<updates::Worker> = None;
-    let mut skyward_updater: Option<updates::Worker> = None;
     // The phone sleeps while its screen is off and nothing needs it awake.
     let sleeper = Sleeper::start()?;
     // A uevent may be a charger or a computer attached or taken away: the
@@ -1595,10 +1611,22 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 other => unreachable!("time passing asks for nothing but the motor, not {other:?}"),
             }
         }
+        // The time on the screen is the phone's own clock, which the network
+        // sets once the recovery reaches it: it jumps by years at a time, and
+        // the date and the rest of the page go with it, so a jump is drawn
+        // afresh whole. A minute going on only redraws, and a minute is the
+        // most often the time on the screen can change.
         let time = clock(app.state.time_zone)?;
         if time != shown_clock {
+            let jumped = minutes_of(&shown_clock)
+                .zip(minutes_of(&time))
+                .is_some_and(|(was, now)| was.abs_diff(now) > 1);
             shown_clock = time;
-            app.redraw();
+            if jumped {
+                app.refresh();
+            } else {
+                app.redraw();
+            }
         }
         for reading in readings.taken() {
             match reading {
@@ -1652,6 +1680,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     fs::write(path, &screen.data).with_context(|| format!("write {}", path.display()))?;
                 }
                 shown = true;
+            }
+            // The controller lost power under the dark panel and comes back
+            // from its reset sending raw frames; tell it again how the device
+            // description has it report positions, once its resume is done.
+            if blanked {
+                retell_at = Some(Instant::now() + RETOUCH);
             }
             blanked = false;
         } else if dozes && app.state.always_on {
@@ -1765,8 +1799,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             || part_worker.is_some()
             || checker.is_some()
             || downloader.is_some()
-            || skyward_checker.is_some()
-            || skyward_updater.is_some()
             || systems_busy;
         let joining = app.state.wlan.as_ref().and_then(|w| w.joined.as_ref()).is_some_and(|j| matches!(j.stage, Joining::Joining | Joining::Addressing));
         let running = match &shell {
@@ -1783,6 +1815,12 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             && !(app.state.double_tap && gesture.is_none())
             && asked.is_none()
             && usb_link()? != UsbLink::Connected;
+        if retell_at.is_some_and(|at| Instant::now() >= at) {
+            retell_at = None;
+            if let Err(e) = inputs.retell() {
+                let _ = skyward_sys::kmsg(&format!("the touchscreen is not told again how to report: {e:#}"));
+            }
+        }
         sleeper.allow(may_sleep);
         let mut fds = vec![inputs.fd(), uevents.fd(), sleeper.fd()];
         if let Some(i) = &installer {
@@ -1823,12 +1861,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if let Some(d) = &downloader {
             fds.push(d.fd());
-        }
-        if let Some(c) = &skyward_checker {
-            fds.push(c.fd());
-        }
-        if let Some(u) = &skyward_updater {
-            fds.push(u.fd());
         }
         if let Some(s) = &systems_worker {
             fds.push(s.fd());
@@ -2224,60 +2256,17 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                             updates::End::Downloaded => DownloadEnd::Downloaded,
                             updates::End::Stopped => DownloadEnd::Stopped,
                             updates::End::Failed(why) => DownloadEnd::Failed(why),
-                            updates::End::Updated(_) | updates::End::NotWritten(_) | updates::End::WriteFailed(..) => {
-                                unreachable!("a system's full package is only downloaded")
-                            }
                         };
                         skyward_sys::kmsg(&format!("downloading {} ended: {end:?}", release.name))?;
                         app.download_ended(end, have(&app, &release), now);
                         fetched = true;
                     }
-                    updates::Event::Checked(_) | updates::Event::SkywardChecked(_) | updates::Event::Writing { .. } => {
-                        unreachable!("a download asks nothing of its own, and writes nothing")
-                    }
+                    updates::Event::Checked(_) => unreachable!("a download asks nothing of its own"),
                 }
             }
         }
         if fetched {
             downloader = None;
-        }
-        let mut asked = false;
-        if let Some(c) = &skyward_checker {
-            for ev in c.events() {
-                let updates::Event::SkywardChecked(answer) = ev else { unreachable!("asking GitHub downloads nothing") };
-                skyward_sys::kmsg(&format!("GitHub told of Skyward's newest release: {answer:?}"))?;
-                app.skyward_checked(answer);
-                asked = true;
-            }
-        }
-        if asked {
-            skyward_checker = None;
-        }
-        let mut updated = false;
-        if let Some(u) = &skyward_updater {
-            for ev in u.events() {
-                match ev {
-                    updates::Event::Progress(progress, rate) => app.skyward_progress(SkywardStage::Download(progress), rate),
-                    updates::Event::Writing { done, total } => app.skyward_progress(SkywardStage::Write { done, total }, 0),
-                    updates::Event::Ended(end) => {
-                        let end = match end {
-                            updates::End::Updated(slots) => SkywardEnd::Updated(slots),
-                            updates::End::Stopped => SkywardEnd::Stopped,
-                            updates::End::Failed(why) => SkywardEnd::Download(why),
-                            updates::End::NotWritten(why) => SkywardEnd::NotWritten(why),
-                            updates::End::WriteFailed(slots, why) => SkywardEnd::WriteFailed(slots, why),
-                            updates::End::Downloaded => unreachable!("Skyward's build is written once it is downloaded"),
-                        };
-                        skyward_sys::kmsg(&format!("updating Skyward ended: {end:?}"))?;
-                        app.skyward_ended(end, now);
-                        updated = true;
-                    }
-                    updates::Event::Checked(_) | updates::Event::SkywardChecked(_) => unreachable!("an update asks nothing of its own"),
-                }
-            }
-        }
-        if updated {
-            skyward_updater = None;
         }
         if let Some(ended) = decryptor.as_ref().and_then(Decryptor::ended) {
             decryptor = None;
@@ -2752,6 +2741,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         wlan_worker(&wlan)?.send(wlan::Command::Join { ssid, name, security, password: password.0 })
                     }
                     Effect::LeaveWlan => wlan_worker(&wlan)?.send(wlan::Command::Leave),
+                    Effect::WlanKept(data) => wlan_worker(&wlan)?.send(wlan::Command::KeepIn { data }),
                     // What the installed system is called is the page's to
                     // report when it cannot be read.
                     Effect::CheckUpdate => {
@@ -2778,24 +2768,6 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         }
                     }
                     Effect::StopDownload => downloader.as_ref().context("there is no download to stop")?.stop(),
-                    Effect::CheckSkyward => {
-                        ensure!(skyward_checker.is_none(), "GitHub is being asked already");
-                        let probe = cfg.wlan.as_ref().context("the phone's WLAN is not brought up")?.probe.clone();
-                        let task = updates::Task::CheckSkyward { probe, codename: cfg.device.codename.clone() };
-                        skyward_checker = Some(updates::Worker::start(task, servers.clone())?);
-                    }
-                    // The zip goes into the recovery's own folder, which is
-                    // in memory, before its image goes into the recovery
-                    // partitions.
-                    Effect::UpdateSkyward(build) => {
-                        ensure!(skyward_updater.is_none(), "Skyward is being updated already");
-                        ensure!(installer.is_none(), "an installer is running already");
-                        skyward_sys::kmsg(&format!("updating Skyward to {}", build.name))?;
-                        let path = Path::new(skyward_sys::RUN).join(&build.name);
-                        let task = updates::Task::UpdateSkyward { build, codename: cfg.device.codename.clone(), path };
-                        skyward_updater = Some(updates::Worker::start(task, servers.clone())?);
-                    }
-                    Effect::StopSkywardUpdate => skyward_updater.as_ref().context("Skyward is not being updated")?.stop(),
                     // Logs that cannot be saved are the page's to report;
                     // the recovery carries on.
                     Effect::ExportLogs { recovery, kernel, storage } => {
