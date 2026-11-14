@@ -36,19 +36,63 @@ pub enum UsbLink {
     Connected,
 }
 
-/// Fastboot as its page shows it: whether the phone's fastbootd runs and
-/// how far a computer has the port, as the runtime last read them.
+/// What init has made of the port: `sys.usb.state`, as the runtime last
+/// read it, kept coarse enough to copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsbState {
+    /// Nothing has the port.
+    Off,
+    /// adbd alone.
+    Adb,
+    /// adbd with file transfer beside it.
+    MtpAdb,
+    /// The phone's own fastbootd.
+    Fastboot,
+    /// A sideload has it.
+    Sideload,
+    /// Something else, or a value the runtime cannot read.
+    Elsewhere,
+}
+
+/// Fastboot as its page shows it: whether the phone's fastbootd runs, how
+/// far a computer has the port, what init made of the port and whether the
+/// function filesystem behind fastbootd is ready, as the runtime last read
+/// them.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fastboot {
     pub running: bool,
     pub link: UsbLink,
+    pub state: UsbState,
+    pub asked: UsbState,
+    pub ready: bool,
+    pub ffs: bool,
+    /// Whether fastbootd has the endpoint open: what separates a fastbootd
+    /// that never reached the function filesystem from one that opened it
+    /// and stopped before writing its descriptors.
+    pub holds: bool,
+    /// Whether android.hardware.boot.IBootControl is registered, which is
+    /// the one thing fastbootd waits for before it opens the endpoint.
+    pub boot: bool,
+    /// What the kernel says fastbootd sits in, when it sits in a call.
+    pub waiting: Option<String>,
 }
 
 impl App {
     /// The runtime read whether fastbootd runs and how far a computer has
     /// the port: keep it and show it if it changed.
-    pub fn set_fastboot(&mut self, running: bool, link: UsbLink) {
-        let now = Fastboot { running, link };
+    pub fn set_fastboot(
+        &mut self,
+        running: bool,
+        link: UsbLink,
+        state: UsbState,
+        asked: UsbState,
+        ready: bool,
+        ffs: bool,
+        holds: bool,
+        boot: bool,
+        waiting: Option<String>,
+    ) {
+        let now = Fastboot { running, link, state, asked, ready, ffs, holds, boot, waiting };
         if self.state.fastboot != now {
             self.state.fastboot = now;
             self.refresh();

@@ -1,7 +1,7 @@
 use crate::app::{
     Action, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field, FileKind,
     FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows, Screen,
-    SkywardEnd, SkywardJob, Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
+    SkywardEnd, SkywardJob, Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, UsbState, Wipe, ADDABLE,
     BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE,
     USB_DRIVE_WANTED, WIPES, installs, starting,
 };
@@ -3739,9 +3739,40 @@ pub fn fastboot(cx: &Ctx) -> Frame {
         UsbLink::Unplugged => ["未连接电脑", "未連接電腦", "No computer"],
     });
     let slot = i.slot.map(|s| s.letter());
+    let state = l.pick(match s.fastboot.state {
+        UsbState::Off => ["关闭", "關閉", "Off"],
+        UsbState::Adb => ["adb", "adb", "adb"],
+        UsbState::MtpAdb => ["mtp,adb", "mtp,adb", "mtp,adb"],
+        UsbState::Fastboot => ["fastboot", "fastboot", "fastboot"],
+        UsbState::Sideload => ["sideload", "sideload", "sideload"],
+        UsbState::Elsewhere => ["其它", "其它", "Something else"],
+    });
+    let asked = l.pick(match s.fastboot.asked {
+        UsbState::Off => ["关闭", "關閉", "Off"],
+        UsbState::Adb => ["adb", "adb", "adb"],
+        UsbState::MtpAdb => ["mtp,adb", "mtp,adb", "mtp,adb"],
+        UsbState::Fastboot => ["fastboot", "fastboot", "fastboot"],
+        UsbState::Sideload => ["sideload", "sideload", "sideload"],
+        UsbState::Elsewhere => ["其它", "其它", "Something else"],
+    });
+    // One line, because the choices below have to stay in sight: r the
+    // endpoint is ready, f the endpoint is there, e fastboot was asked for,
+    // b IBootControl answers, o fastbootd holds the endpoint, w what it waits on.
+    let facts_line = format!(
+        "{} r{} f{} e{} b{} o{} w{}",
+        state,
+        u8::from(s.fastboot.ready),
+        u8::from(s.fastboot.ffs),
+        u8::from(s.fastboot.asked == UsbState::Fastboot),
+        u8::from(s.fastboot.boot),
+        u8::from(s.fastboot.holds),
+        s.fastboot.waiting.as_deref().unwrap_or("-"),
+    );
     let mut facts = vec![
         Row::new("fastbootd").trail(Trail::Text(running)),
         Row::new("USB").trail(Trail::Text(link)),
+        Row::new("sys.usb.config").trail(Trail::Text(asked)),
+        Row::new("sys.usb.state").trail(Trail::Text(&facts_line)),
         Row::new(l.pick(["设备代号", "裝置代號", "Codename"])).trail(Trail::Text(&i.codename)),
     ];
     if let Some(letter) = slot {

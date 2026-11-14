@@ -90,6 +90,19 @@ ready_service = "android.hardware.gatekeeper.IGatekeeper/default"
 user = "system"
 groups = ["system"]
 
+# The boot control HAL. init only starts the "default" and "hal" classes in a
+# recovery, so this one, which the stock rc files declare as "early_hal", is
+# never started, and fastbootd waits on android.hardware.boot.IBootControl
+# before it opens the endpoint it serves fastboot over: it then sits there
+# with the port on "none" and no computer sees the phone. Starting it here
+# puts the interface there before the fastboot page can be reached.
+[[service]]
+path = "/system/bin/hw/android.hardware.boot-service.qti.recovery"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_service = "android.hardware.boot.IBootControl/default"
+user = "root"
+groups = ["root"]
+
 # KeyMint: the one key service on this phone, which serves the three
 # interfaces below it from the same process.
 [[service]]
@@ -181,9 +194,3 @@ recovery = "de8fcb7522ab6fd8b366b8bd6f0f2f5150d969a4c4d5ce04c61d1f87f6a2353d"
 resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
 strength = { lightest = 0.25, strongest = 0.75 }
 
-[[service]]
-path = "/vendor/bin/hw/android.hardware.boot-service.qti"
-libraries = ["/system/lib64", "/vendor/lib64", "/mnt/system/system/lib64"]
-ready_service = "android.hardware.boot.IBootControl/default"
-user = "root"
-groups = ["root"]

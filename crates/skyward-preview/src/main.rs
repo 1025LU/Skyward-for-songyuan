@@ -989,11 +989,11 @@ fn main() -> Result<()> {
         }),
         // The fastboot page starts worked with the keys, its first choice lit.
         ("68-fastboot-light", Screen::Fastboot, false, &|app, _| {
-            app.set_fastboot(true, UsbLink::Connected);
+            app.set_fastboot(true, UsbLink::Connected, UsbState::Fastboot, UsbState::Fastboot, true, true, true, true, None);
             0
         }),
         ("69-fastboot-dark-unplugged", Screen::Fastboot, true, &|app, f| {
-            app.set_fastboot(true, UsbLink::Unplugged);
+            app.set_fastboot(true, UsbLink::Unplugged, UsbState::Fastboot, UsbState::Fastboot, true, true, true, true, None);
             keys_down(app, f, &info, 1)
         }),
         // The home page's search bar folding away under a finger: its words

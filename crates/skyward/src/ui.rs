@@ -37,7 +37,8 @@ use skyward_systems::Who;
 use skyward_ui::app::{
     App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
     FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
-    RenameRefused, Screen, Shot, SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
+    RenameRefused, Screen, Shot, SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, UsbState, Wipe, DATA_OPENING, DATA_PARTITION,
+    DOWNLOADS,
     INSTALL_UNFINISHED, USB_DRIVE,
 };
 use skyward_ui::settings::Keeper;
@@ -78,6 +79,9 @@ const RETOUCH: Duration = Duration::from_millis(150);
 /// Where logs saved to the temporary folder go, in the recovery service's
 /// own folder, and where in internal storage the others do.
 const TMP_LOGS: &str = "/skyward/run/logs";
+
+/// The HAL fastbootd waits for before it can open the port to the computer.
+const BOOT_CONTROL: &str = "android.hardware.boot.IBootControl/default";
 const STORAGE_LOGS: &str = "Skyward/logs";
 
 /// The folder of internal storage the system saves its own screenshots in,
@@ -259,9 +263,38 @@ fn withhold(transfer: &mut Option<Transfer>, app: &mut App, now: u64) -> Result<
 
 /// Whether the phone's fastbootd runs, as init tells it, and how far a
 /// computer has the port, as the USB controller tells it.
-fn fastboot_status() -> Result<(bool, UsbLink)> {
+fn fastboot_status() -> Result<(bool, UsbLink, UsbState, UsbState, bool, bool, bool, bool, Option<String>)> {
     let running = skyward_sys::prop("init.svc.fastbootd").as_deref() == Some("running");
-    Ok((running, usb_link()?))
+    // What init made of the port and whether the function filesystem
+    // behind fastbootd is ready: a port that stays on "adb" while the page
+    // says fastbootd runs is waiting on one of these.
+    let state = match skyward_sys::prop("sys.usb.state").as_deref() {
+        Some("none") => UsbState::Off,
+        Some("adb") => UsbState::Adb,
+        Some("mtp,adb") => UsbState::MtpAdb,
+        Some("fastboot") => UsbState::Fastboot,
+        Some("sideload") => UsbState::Sideload,
+        _ => UsbState::Elsewhere,
+    };
+    let asked = match skyward_sys::prop("sys.usb.config").as_deref() {
+        Some("none") => UsbState::Off,
+        Some("adb") => UsbState::Adb,
+        Some("mtp,adb") => UsbState::MtpAdb,
+        Some("fastboot") => UsbState::Fastboot,
+        Some("sideload") => UsbState::Sideload,
+        _ => UsbState::Elsewhere,
+    };
+    let ready = skyward_sys::prop("sys.usb.ffs.ready").as_deref() == Some("1");
+    // fastbootd opens this function filesystem before init can bind the
+    // port for it, so a port that never reaches "fastboot" with fastbootd
+    // running is either this path missing or fastbootd failing to open it.
+    // The endpoint file is what proves the filesystem is really mounted: a
+    // bare directory is only the mount point that never got used.
+    let ffs = std::path::Path::new("/dev/usb-ffs/fastboot/ep0").exists();
+    let holds = fastbootd_holds_endpoint();
+    let boot = crate::services::registered("android.hardware.boot.IBootControl/default");
+    let waiting = fastbootd_waiting();
+    Ok((running, usb_link()?, state, asked, ready, ffs, holds, boot, waiting))
 }
 
 /// Light the panel, as on a cable going in or out, when the battery as it
@@ -318,6 +351,93 @@ fn usb_link() -> Result<UsbLink> {
         "not attached" => UsbLink::Unplugged,
         _ => UsbLink::Connecting,
     })
+}
+
+/// What fastbootd sits in, as the kernel names it, for the few places a
+/// stuck fastbootd can be told apart by.
+fn fastbootd_waiting() -> Option<String> {
+    let wchan = fastbootd_file("wchan")?;
+    let text = fs::read_to_string(wchan).ok()?;
+    let text = text.trim();
+    if text.is_empty() || text == "0" {
+        return None;
+    }
+    Some(
+        match text {
+            "binder_thread_read" | "binder_ioctl" | "binder_wait_for_work" => "binder",
+            "ep_poll" | "do_epoll_wait" => "epoll",
+            "do_wait" | "wait4" => "a child",
+            other => other,
+        }
+        .to_string(),
+    )
+}
+
+/// A file in the first process whose command line names fastbootd.
+fn fastbootd_file(name: &str) -> Option<std::path::PathBuf> {
+    let entries = fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        if !file.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(cmdline) = fs::read_to_string(entry.path().join("cmdline")) else {
+            continue;
+        };
+        if cmdline.contains("fastbootd") {
+            return Some(entry.path().join(name));
+        }
+    }
+    None
+}
+
+/// Whether fastbootd has the fastboot endpoint open, as the descriptor
+/// table of its process says. A port that stays on "none" with the
+/// filesystem mounted says the difference between a fastbootd that never
+/// opened it and one that opened it and stopped before its descriptors
+/// were written, which point at different faults.
+fn fastbootd_holds_endpoint() -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(cmdline) = fs::read_to_string(entry.path().join("cmdline")) else {
+            continue;
+        };
+        if !cmdline.contains("fastbootd") {
+            continue;
+        }
+        let Ok(fds) = fs::read_dir(entry.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            if let Ok(target) = fs::read_link(fd.path())
+                && target.to_string_lossy().contains("usb-ffs/fastboot")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mount the function filesystem fastbootd writes its descriptors into, as
+/// the stock table's "on fs" pass does for adb and fastboot. A recovery
+/// that skipped that pass leaves only the bare mount point, which fastbootd
+/// cannot open, and the port never leaves "none" for "fastboot".
+fn mount_fastboot_ffs() -> Result<()> {
+    let path = Path::new("/dev/usb-ffs/fastboot");
+    if path.join("ep0").exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(path).with_context(|| format!("make {}", path.display()))?;
+    let options: Vec<String> = ["rmode=0770", "fmode=0660", "uid=1000", "gid=1000"].iter().map(|o| (*o).to_string()).collect();
+    skyward_block::mount::mount(Path::new("fastboot"), path, "functionfs", &options)
+        .with_context(|| format!("mount functionfs on {}", path.display()))
 }
 
 /// What a request from misc shows on the pages that answer it.
@@ -1331,12 +1451,62 @@ impl<'a> Pages<'a> {
             }
         }
         if fastboot {
+            // The stock table mounts this function filesystem on its own
+            // "on fs" pass; where that pass went by without it, fastbootd
+            // has nothing to open and the port never reaches "fastboot", so
+            // the mount is made here as well.
+            if let Err(e) = mount_fastboot_ffs() {
+                skyward_sys::kmsg(&format!("fastboot's function filesystem is not mounted: {e:#}"))?;
+            }
+            // fastbootd asks the service directory for the boot control HAL
+            // before it opens its port and asks again every second until it
+            // has it, but the recovery's own services wait for the phone's
+            // partitions, which are not up for another twenty seconds: the
+            // port times out long before then. Started here first, on a
+            // thread of its own as the services are, the HAL answers the
+            // first time fastbootd asks.
+            let boot: Vec<skyward_programs::secure::Started> = cfg
+                .services
+                .iter()
+                .filter(|s| s.ready_service.iter().any(|name| name == BOOT_CONTROL))
+                .cloned()
+                .map(skyward_programs::secure::Started::from)
+                .collect();
+            if boot.is_empty() {
+                skyward_sys::kmsg(&format!("{BOOT_CONTROL} is not described, so fastbootd waits for none"))?;
+            } else {
+                // Waited for, not merely started: the port is asked for just
+                // below and is given up on after five seconds, so a HAL that
+                // is still coming up by then leaves fastbootd asking a
+                // directory that has nothing to answer with.
+                match crate::services::start(&boot, None, true) {
+                    Ok(_) => {
+                        let up = crate::services::registered(BOOT_CONTROL);
+                        skyward_sys::kmsg(&format!(
+                            "for fastbootd: {BOOT_CONTROL} is asked for and answers: {up}"
+                        ))?;
+                    }
+                    Err(e) => {
+                        skyward_sys::kmsg(&format!("the boot control service is not started: {e:#}"))?;
+                    }
+                }
+            }
+            // The port stops answering adb the moment it is asked for, so
+            // what the fastboot side starts with goes to the kernel log,
+            // which the next boot still reads.
+            let (was_running, _, was_state, _, was_ready, was_ffs, was_holds, was_boot, was_waiting) =
+                fastboot_status()?;
+            if was_state != UsbState::Fastboot {
+                skyward_sys::kmsg(&format!(
+                    "fastboot asked for: state {was_state:?}, ready {was_ready}, ep0 {was_ffs}, holds {was_holds}, boot {was_boot}, waiting {was_waiting:?}, running {was_running}"
+                ))?;
+            }
             if let Err(e) = skyward_sys::usb::switch("fastboot", USB_TIMEOUT) {
                 skyward_sys::kmsg(&format!("fastbootd has not taken the port: {e:#}"))?;
                 app.report(&format!("{e:#}"), monotonic_ms());
             }
-            let (running, link) = fastboot_status()?;
-            app.set_fastboot(running, link);
+            let (running, link, state, asked, ready, ffs, holds, boot, waiting) = fastboot_status()?;
+            app.set_fastboot(running, link, state, asked, ready, ffs, holds, boot, waiting);
         }
         // The wipe page offers the cache partition where the phone's table has
         // one; a table that does not read leaves it out, and the page still
@@ -1590,8 +1760,8 @@ impl<'a> Pages<'a> {
         self.take_readings(now)?;
         // In fastboot the page follows fastbootd and the cable each second.
         if self.fastboot && self.port_at.elapsed().as_secs() >= 1 {
-            let (running, link) = fastboot_status()?;
-            self.app.set_fastboot(running, link);
+            let (running, link, state, asked, ready, ffs, holds, boot, waiting) = fastboot_status()?;
+            self.app.set_fastboot(running, link, state, asked, ready, ffs, holds, boot, waiting);
             self.port_at = Instant::now();
         }
         let (lit, shown) = self.show(now)?;
@@ -3013,13 +3183,22 @@ impl Pages<'_> {
     /// port goes through "none"; then the slot's partitions come up as at
     /// boot.
     fn enter_recovery(&mut self) -> Result<()> {
-        skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)?;
-        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
-        crate::prepare(self.cfg, slot)?;
-        self.read_at = Instant::now();
-        read_details(self.cfg, &mut self.info, &mut self.unread.details)?;
+        // The page is left first: coming back to the recovery matters more
+        // than the port does, and a port fastbootd still holds is asked for
+        // again on the next turn rather than ending the recovery here.
         self.fastboot = false;
         self.app.enter_recovery();
+        if let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT) {
+            skyward_sys::kmsg(&format!("the port is still with fastboot: {e:#}"))?;
+        }
+        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+        if let Err(e) = crate::prepare(self.cfg, slot) {
+            skyward_sys::kmsg(&format!("the recovery is not prepared again: {e:#}"))?;
+        }
+        self.read_at = Instant::now();
+        if let Err(e) = read_details(self.cfg, &mut self.info, &mut self.unread.details) {
+            skyward_sys::kmsg(&format!("what the phone is is not read again: {e:#}"))?;
+        }
         if let Some(w) = self.systems_worker.as_mut() {
             w.send(systems::Task::Resume);
         }
