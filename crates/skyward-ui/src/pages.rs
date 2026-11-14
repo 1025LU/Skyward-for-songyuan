@@ -293,20 +293,27 @@ pub fn home(cx: &Ctx) -> Frame {
         out.extend(hits(&first.rows, &opens));
         y = first.bottom + t.m.card_gap;
     }
-    let tools = widgets::list(&mut c, t, f, y, &[
+    // Decrypting leads back to the screen lock, and is a tool only while
+    // there is still something to open: once the files are open the row goes
+    // whole, with nothing left to lead to.
+    let mut rows = vec![
         Row::new(l.pick(["安装", "安裝", "Install"])).icon(GREEN, Icon::Install),
         Row::new(l.pick(["备份", "備份", "Backup"])).icon(BLUE, Icon::Backup),
         Row::new(l.pick(["恢复", "還原", "Restore"])).icon(PURPLE, Icon::Restore),
         Row::new(l.pick(["挂载", "掛載", "Mount"])).icon(SLATE, Icon::Mount),
-        Row::new(l.pick(DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
-    ]);
-    out.extend(hits(&tools.rows, &[
+    ];
+    let mut opens = vec![
         Action::Open(Screen::Install),
         Action::Open(Screen::Backup),
         Action::Open(Screen::Restore),
         Action::Open(Screen::Mount),
-        Action::Open(Screen::Decrypt),
-    ]));
+    ];
+    if !matches!(cx.state.data, Data::Open) {
+        rows.push(Row::new(l.pick(DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))));
+        opens.push(Action::Open(Screen::Decrypt));
+    }
+    let tools = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&tools.rows, &opens));
     y = tools.bottom + t.m.card_gap;
     let target = l.pick(REBOOT_TARGETS[cx.state.reboot].0);
     let system = widgets::list(&mut c, t, f, y, &[
