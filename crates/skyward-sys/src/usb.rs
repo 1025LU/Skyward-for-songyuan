@@ -37,6 +37,17 @@ pub fn set(config: &str, timeout: Duration) -> Result<()> {
         return Ok(());
     }
     set_prop("sys.usb.config", config)?;
+    // adbd is disabled in init.rc and started only where the property is
+    // exactly "adb". A port asked for "mtp,adb" therefore leaves it stopped,
+    // and with it the function filesystem that sets sys.usb.ffs.ready, so
+    // init never finds the port ready to be put up. Started here by hand for
+    // every configuration that keeps adb among its functions.
+    if config != "none"
+        && functions_of(config).contains(&"adb")
+        && !matches!(prop("init.svc.adbd").as_deref(), Some("running") | Some("starting"))
+    {
+        let _ = set_prop("ctl.start", "adbd");
+    }
     wait_prop("sys.usb.state", config, timeout)?;
     if config == "none" {
         let start = Instant::now();
