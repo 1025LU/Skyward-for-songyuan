@@ -2750,7 +2750,7 @@ pub fn skyward_update(cx: &Ctx) -> Frame {
     let y = widgets::section_first(&mut c, t, f, top, l.pick(PROJECT_AUTHOR));
     let y = widgets::info_card(&mut c, t, f, y, &[("Kirk Lin", VERSION.to_string())]);
     let y = widgets::section(&mut c, t, f, y, l.pick(OPTIMIZED_BY));
-    let y = widgets::info_card(&mut c, t, f, y, &[("是山上耕田呀", "0.0.1".to_string())]);
+    let y = widgets::info_card(&mut c, t, f, y, &[("是山上耕田呀", "0.0.2".to_string())]);
     let y = widgets::section(&mut c, t, f, y, l.pick(CODING_AGENT));
     let y = widgets::info_card(&mut c, t, f, y, &[("DeepSeek Harness", String::new())]);
     let y = widgets::section(&mut c, t, f, y, l.pick(BASE_MODEL));
