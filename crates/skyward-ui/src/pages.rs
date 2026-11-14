@@ -750,7 +750,7 @@ fn data_status(cx: &Ctx, mut c: Canvas, icon: Icon, title: &str, note: Option<&s
     let leave = l.pick(if matches!(cx.state.data, Data::Open | Data::Erased) { ["完成", "完成", "Done"] } else { NOT_NOW });
     c.text_center(&f.heading, leave, x, leave_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), leave_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
+    Frame { header: false, back: false, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
 }
 
 /// What leaves the decrypt page with the data partition left as it is.
@@ -813,7 +813,7 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
     let skip_cy = bottom - m.dp(34.0);
     c.text_center(&f.heading, l.pick(NOT_NOW), x, skip_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), skip_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
-    Frame { header: false, pattern, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
+    Frame { header: false, back: false, pattern, ..Frame::new(t, c, out, l.pick(DECRYPT), 0.0) }
 }
 
 /// What a slot is shown as where the boot control could not be read.
