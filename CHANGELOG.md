@@ -101,5 +101,5 @@
 
 - 镜像：`skyward-songyuan-fix17.img`（MD5 `fcdcb05dba5d52411ae6b7a4e13671c5`）
 - 设备：recovery_b 槽，Skyward v0.3.1（fork）
-- 测试：`cargo test -p skyward-ui` 347 passed
+- 测试：`cargo test --workspace` 893 passed（2026-11-20 复核）
 - 已知限制：原厂 bootloader 无法刷 super 内逻辑分区；如需刷系统分区请用完整 OTA 包走「安装」页。
