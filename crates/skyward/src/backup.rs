@@ -29,6 +29,15 @@ const CHUNK: usize = 4 << 20;
 const DATA: &str = "/data";
 const DATA_KEY: &str = "/data/unencrypted/ref";
 
+/// Whether a restore of the data partition is refused when the partition has
+/// been made afresh since the backup was taken. Its files were encrypted with
+/// a key that is no longer there, so they may not open: the guard keeps a
+/// backup from being written where it cannot be read back.
+///
+/// This build turns it off, to see what such a restore really makes of a
+/// phone. It is a test build: the release builds keep the guard on.
+const REFUSE_A_RESET_DATA: bool = false;
+
 /// What the data partition's archive takes for each entry beyond what a
 /// file holds: its headers, and the end of its last block.
 const ENTRY_BYTES: u64 = 2048;
@@ -507,7 +516,12 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
             }
             Part::Data => {
                 if manifest.data_key.as_deref() != Some(data_key()?.as_str()) {
-                    return Err(Refusal::DataReset { made: manifest.made, written: data_key_written() }.into());
+                    if REFUSE_A_RESET_DATA {
+                        return Err(Refusal::DataReset { made: manifest.made, written: data_key_written() }.into());
+                    }
+                    // This build goes on, and says so, so a test can be read back.
+                    skyward_sys::kmsg("the data partition was made afresh since the backup, and this build restores it anyway")
+                        .ok();
                 }
             }
         }
