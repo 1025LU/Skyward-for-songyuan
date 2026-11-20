@@ -1185,9 +1185,12 @@ mod tests {
         let enabled = format!("{base}\n[touch]\ndouble_tap = true\n");
         assert!(DeviceConfig::parse(&enabled).unwrap().touch.double_tap);
         assert!(DeviceConfig::parse(&format!("{base}\n[touch.double_tap]\n")).is_err());
-        let dada = DeviceConfig::parse(include_str!("../../../devices/dada.toml")).unwrap();
-        assert!(dada.touch.double_tap);
-        let native = dada.touch.xiaomi_double_tap.unwrap();
+        // The device configs no longer carry this gesture, so the test names
+        // the flags itself and checks that they are kept.
+        let both = format!("{base}\n[touch]\ndouble_tap = true\n[touch.xiaomi_double_tap]\npath = \"/dev/xiaomi-touch\"\ntouch_id = 0\n");
+        let configured = DeviceConfig::parse(&both).unwrap();
+        assert!(configured.touch.double_tap);
+        let native = configured.touch.xiaomi_double_tap.unwrap();
         assert_eq!((native.path.as_str(), native.touch_id), ("/dev/xiaomi-touch", 0));
         assert!(DeviceConfig::parse(&format!("{base}\n[touch.xiaomi_double_tap]\npath = \"dev/xiaomi-touch\"\ntouch_id = 0\n")).is_err());
     }
