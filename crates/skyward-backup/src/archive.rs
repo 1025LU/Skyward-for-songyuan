@@ -17,6 +17,10 @@ use tar::{Archive, Builder, EntryType, Header};
 
 /// How the archive's extended headers name what a tar header leaves out.
 const XATTR: &str = "SCHILY.xattr.";
+/// How an attribute whose name or value holds an equals sign or a line's
+/// end is written instead: both in hex. The header is read a line at a
+/// time, and such a record would be cut in two by it.
+const HEX_XATTR: &str = "SKYWARD.xattr-bin";
 const PROJECT: &str = "SKYWARD.project";
 const INHERITS: &str = "SKYWARD.project-inherit";
 const KEY_ROOT: &str = "SKYWARD.key-root";
@@ -417,6 +421,10 @@ fn records(entry: &mut tar::Entry<impl Read>) -> Result<Records> {
         let value = ext.value_bytes();
         if let Some(name) = key.strip_prefix(XATTR) {
             r.xattrs.push((name.to_string(), value.to_vec()));
+        } else if key == HEX_XATTR {
+            let text = std::str::from_utf8(value).with_context(|| format!("read {HEX_XATTR}"))?;
+            let (name, value) = text.split_once(':').with_context(|| format!("read {HEX_XATTR}"))?;
+            r.xattrs.push((String::from_utf8_lossy(&hex::decode(name)?).into_owned(), hex::decode(value)?));
         } else if key == PROJECT {
             r.project = Some(std::str::from_utf8(value)?.parse()?);
         } else if key == INHERITS {
@@ -503,6 +511,20 @@ const FS_XFLAG_PROJINHERIT: u32 = 0x200;
 #[cfg(target_os = "android")]
 const FS_IOC_GET_ENCRYPTION_POLICY_EX: libc::c_int = 0xc009_6616_u32 as libc::c_int;
 
+/// An attribute as the extended header writes it: its name and value as
+/// they are, where neither holds an equals sign or a line's end, and both
+/// in hex where one does. An equals sign in a name would move where the
+/// reader splits the record, and a line's end in either would cut it in
+/// two.
+#[cfg(any(target_os = "android", test))]
+fn record(name: &[u8], value: &[u8]) -> (String, Vec<u8>) {
+    let cuts = name.contains(&b'\n') || name.contains(&b'=') || value.contains(&b'\n');
+    match cuts {
+        true => (HEX_XATTR.to_string(), format!("{}:{}", hex::encode(name), hex::encode(value)).into_bytes()),
+        false => (format!("{XATTR}{}", String::from_utf8_lossy(name)), value.to_vec()),
+    }
+}
+
 /// The extended attributes of an entry, a link's own, the SELinux label
 /// among them, and the project its storage is counted in.
 #[cfg(target_os = "android")]
@@ -530,7 +552,7 @@ fn beyond(path: &Path, meta: &fs::Metadata) -> Result<Vec<(String, Vec<u8>)>> {
             return Err(io::Error::last_os_error()).with_context(|| format!("read its attribute {name:?}"));
         }
         value.truncate(len as usize);
-        out.push((format!("{XATTR}{}", String::from_utf8_lossy(raw)), value));
+        out.push(record(raw, &value));
     }
     if meta.is_file() || meta.is_dir() {
         let fsx = fs_attributes(path)?;
@@ -765,5 +787,71 @@ mod tests {
         assert_eq!(time("1792561872.000000123").unwrap(), (1_792_561_872, 123));
         assert_eq!(time("-5.5").unwrap(), (-5, 500_000_000));
         assert_eq!(time("86400").unwrap(), (86_400, 0));
+    }
+}
+
+#[cfg(test)]
+mod pax_tests {
+    use super::*;
+
+    /// One entry's attributes, written as a backup writes them and read back
+    /// through the same records() a restore uses.
+    fn read_back(attrs: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<(String, Vec<u8>)>> {
+        let mut out = Vec::new();
+        {
+            let mut b = Builder::new(&mut out);
+            let mut pairs: Vec<(String, Vec<u8>)> = attrs.iter().map(|(name, value)| record(name, value)).collect();
+            pairs.push((MTIME.into(), b"1795165659.000000000".to_vec()));
+            b.append_pax_extensions(pairs.iter().map(|(k, v)| (k.as_str(), v.as_slice())))?;
+            let mut header = Header::new_gnu();
+            header.set_entry_type(EntryType::Directory);
+            header.set_mode(0o755);
+            header.set_mtime(0);
+            header.set_size(0);
+            b.append_data(&mut header, "app-ephemeral", io::empty())?;
+            b.finish()?;
+        }
+        let mut archive = Archive::new(out.as_slice());
+        let mut xattrs = Vec::new();
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            xattrs.extend(records(&mut entry).with_context(|| "read an entry")?.xattrs);
+        }
+        Ok(xattrs)
+    }
+
+    #[test]
+    fn an_attribute_holding_a_line_end_comes_back_whole() {
+        let cases: Vec<Vec<(Vec<u8>, Vec<u8>)>> = vec![
+            vec![(b"user.skyward".to_vec(), b"kept".to_vec())],
+            vec![(b"user.skyward".to_vec(), b"a\nb".to_vec())],
+            vec![(b"user.bin".to_vec(), vec![0u8, 1, 2, 10, 255])],
+            vec![(b"user.a=b".to_vec(), b"kept".to_vec())],
+            vec![(b"user.new\nline".to_vec(), b"kept".to_vec())],
+        ];
+        for case in cases {
+            let back = read_back(&case).unwrap();
+            assert_eq!(back.len(), 1, "one attribute comes back");
+            assert_eq!(back[0].1, case[0].1, "the value comes back as it was");
+            assert_eq!(back[0].0, String::from_utf8_lossy(&case[0].0).into_owned(), "so does the name");
+        }
+    }
+
+    #[test]
+    fn a_record_that_would_be_cut_in_two_is_written_in_hex() {
+        let cut: Vec<(Vec<u8>, Vec<u8>)> = vec![
+            (b"user.skyward".to_vec(), b"a\nb".to_vec()),
+            (b"user.bin".to_vec(), vec![0u8, 10, 255]),
+            (b"user.a=b".to_vec(), b"kept".to_vec()),
+            (b"user.new\nline".to_vec(), b"kept".to_vec()),
+        ];
+        for (name, value) in cut {
+            let (key, written) = record(&name, &value);
+            assert_eq!(key, HEX_XATTR);
+            assert!(!written.contains(&b'\n'), "{written:?} holds no line's end");
+        }
+        let (key, written) = record(b"user.skyward", b"kept");
+        assert_eq!(key, "SCHILY.xattr.user.skyward");
+        assert_eq!(written, b"kept".to_vec());
     }
 }
