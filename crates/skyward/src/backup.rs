@@ -132,8 +132,10 @@ pub enum Refusal {
     OtherPhone(String),
     /// This partition in super is not the size it was backed up at.
     Resized(String),
-    /// The data partition has been made afresh since the backup.
-    DataReset,
+    /// The data partition has been made afresh since the backup: when the
+    /// backup was made, in Unix seconds, and when its key was written, where
+    /// the phone says it.
+    DataReset { made: i64, written: Option<i64> },
 }
 
 impl std::fmt::Display for Refusal {
@@ -143,7 +145,13 @@ impl std::fmt::Display for Refusal {
             Refusal::Update(state) => write!(f, "an update is in flight ({state:?})"),
             Refusal::OtherPhone(device) => write!(f, "the backup was made on {device}"),
             Refusal::Resized(name) => write!(f, "{name} is not the size it was backed up at"),
-            Refusal::DataReset => write!(f, "the data partition has been made afresh since the backup"),
+            Refusal::DataReset { made, written } => match written {
+                Some(at) => write!(
+                    f,
+                    "the data partition has been made afresh since the backup: made {made}, and its key written {at}, in Unix seconds"
+                ),
+                None => write!(f, "the data partition has been made afresh since the backup: made {made}, in Unix seconds"),
+            },
         }
     }
 }
@@ -190,6 +198,7 @@ impl Worker {
             let tell = |event: Event| {
                 teller.tell(event);
             };
+            let verb = if matches!(&task, Task::Restore(_)) { "restore" } else { "backup" };
             let ended = match task {
                 Task::Backup(t) => backup(t, &tell, &stop).map(End::Saved),
                 Task::Restore(t) => restore(t, &tell, &stop).map(|unmade| End::Restored { unmade }),
@@ -205,9 +214,9 @@ impl Worker {
             let said = match &end {
                 End::Saved(folder) => format!("backup saved in {}", folder.display()),
                 End::Restored { unmade } => format!("backup restored, all but {unmade:?}"),
-                End::Stopped => "backup stopped".into(),
-                End::Refused(why) => format!("backup refused: {why}"),
-                End::Failed(why) => format!("backup failed: {why}"),
+                End::Stopped => format!("{verb} stopped"),
+                End::Refused(why) => format!("{verb} refused: {why}"),
+                End::Failed(why) => format!("{verb} failed: {why}"),
             };
             skyward_sys::kmsg(&said).expect("the kernel log takes a line");
             tell(Event::Ended(end));
@@ -294,6 +303,14 @@ fn copy(from: &mut impl Read, to: &mut impl Write, len: u64, cancel: &AtomicBool
 fn data_key() -> Result<String> {
     let bytes = fs::read(DATA_KEY).with_context(|| format!("read {DATA_KEY}"))?;
     Ok(hex::encode(bytes))
+}
+
+/// When the data partition's key was written, in Unix seconds, where the
+/// phone says so: the file its name is kept in is written as the key is
+/// made, so a time later than the backup's is a key made anew.
+fn data_key_written() -> Option<i64> {
+    let at = fs::metadata(DATA_KEY).ok()?.modified().ok()?;
+    at.duration_since(std::time::UNIX_EPOCH).ok().map(|since| since.as_secs() as i64)
 }
 
 /// The bytes free where `path` is, or would be made.
@@ -490,7 +507,7 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
             }
             Part::Data => {
                 if manifest.data_key.as_deref() != Some(data_key()?.as_str()) {
-                    return Err(Refusal::DataReset.into());
+                    return Err(Refusal::DataReset { made: manifest.made, written: data_key_written() }.into());
                 }
             }
         }
